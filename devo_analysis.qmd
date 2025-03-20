@@ -1,0 +1,41 @@
+---
+title: "BabyView Developmental Analysis"
+format: html
+---
+
+```{r}
+# remotes::install_github("babyview-project/babyviewr")
+library(tidyverse)
+library(babyviewr)
+library(lubridate)
+```
+
+```{r}
+# Load the data
+participants <- babyviewr::get_participant_data(include_demographics = TRUE)
+recordings <- babyviewr::get_main_recording_data(include_luna = TRUE)
+```
+
+```{r}
+d_merged <- left_join(recordings, 
+                      participants |>
+                        filter(dataset %in% c("BV-main","Luna")) |>
+                        select(-dataset), by = "subject_id")
+
+d <- d_merged |>
+  group_by(subject_id) |>
+  arrange(date_time) |>
+  mutate(age = date(date_time) - date_birth_rounded, 
+         cumulative_hrs = cumsum(duration_hrs))
+
+
+ggplot(filter(d, dataset == "BV-main"), 
+       aes(x = age/30.3, y = cumulative_hrs, col = subject_id)) + 
+  geom_point(alpha= .1) + 
+  geom_point(data = filter(d, dataset == "Luna"), col = "black") + 
+  scale_color_discrete(guide = FALSE) + 
+  ggthemes::theme_few() + 
+  xlab("Age (months)") + 
+  ylab("Cumulative hours of data")
+```
+
