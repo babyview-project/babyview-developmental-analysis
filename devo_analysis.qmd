@@ -57,15 +57,15 @@ ggplot(age_density, aes(x = age_mo, y = n_hours, fill = dataset)) +
 
 
 ```{r}
-poses <- read_csv("frame_data/pose_collated_1000.csv")
+poses <- read_csv("frame_data/pose_10000.csv")
 
 ```
 Looks like some of the 10k sample frames are from Bing. 
 
 ```{r}
-poses$video_hashid[!(poses$video_hashid %in% recordings$superseded_gcp_name_feb25)]
+poses$superseded_gcp_name_feb25[!(poses$superseded_gcp_name_feb25 %in% recordings$superseded_gcp_name_feb25)]
 
-any(recordings$superseded_gcp_name_feb25 == "01420001_2024-05-20_1_10a1a67ed7", na.rm=TRUE)
+# any(recordings$superseded_gcp_name_feb25 == "01420001_2024-05-20_1_10a1a67ed7", na.rm=TRUE)
 
 ```
 
@@ -73,7 +73,7 @@ Merge in the data
 
 ```{r}
 
-poses_joined <- inner_join(poses, d, by = c("video_hashid" = "superseded_gcp_name_feb25"))
+poses_joined <- inner_join(poses, d, by = c("superseded_gcp_name_feb25" = "superseded_gcp_name_feb25"))
 ```
 
 
@@ -96,7 +96,7 @@ ggplot(pose_ms, aes(x = age_mo, y = prop, col = part)) +
 # Objects
 
 ```{r}
-objects <- read_csv("frame_data/yoloe_1000_frames_fixed.csv")
+objects <- read_csv("frame_data/yoloe_1k_frames_fixed_ids.csv")
 
 objects_joined <- inner_join(objects, d, by = c("superseded_gcp_name_feb25"))
 
@@ -124,4 +124,26 @@ ggplot(object_ms, aes(x = age_mo, y = n_objs)) +
 ggplot(object_ms, aes(x = age_mo, y = pixels)) + 
   geom_point(aes(size = n)) + 
   geom_smooth(method = "lm")
+```
+```{r}
+object_freq <- objects_joined %>%
+  group_by(class_name) %>%
+  summarize(count = n())  %>%
+  arrange(count) %>%
+  slice_max(n=50, order_by=count)
+```
+
+```{r}
+
+ggplot(data=object_freq, aes(x=fct_reorder(class_name, count, .desc=FALSE), y=count)) +
+  theme_few(base_size=6) +
+  geom_point(alpha=.8) +
+  coord_flip() +
+  xlab('Top 50 objects detected') +
+  ylab('# of detections in 1000 frames')
+```
+
+
+```{r}
+aoa = read_csv(here::here('cdi_data_march_2025/MCDI_items_with_AoA.csv'))
 ```
