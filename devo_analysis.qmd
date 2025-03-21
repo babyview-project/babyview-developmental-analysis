@@ -9,6 +9,8 @@ library(tidyverse)
 library(babyviewr)
 library(lubridate)
 library(ggthemes)
+library(kableExtra)
+library(here)
 ```
 
 ```{r}
@@ -61,18 +63,16 @@ poses <- read_csv("frame_data/pose_10000.csv")
 
 ```
 Looks like some of the 10k sample frames are from Bing. 
-
+Looks to be about ~1000 frames, not included in this analysis
 ```{r}
-poses$superseded_gcp_name_feb25[!(poses$superseded_gcp_name_feb25 %in% recordings$superseded_gcp_name_feb25)]
+length(poses$superseded_gcp_name_feb25[!(poses$superseded_gcp_name_feb25 %in% recordings$superseded_gcp_name_feb25)])
 
 # any(recordings$superseded_gcp_name_feb25 == "01420001_2024-05-20_1_10a1a67ed7", na.rm=TRUE)
 
 ```
 
 Merge in the data
-
 ```{r}
-
 poses_joined <- inner_join(poses, d, by = c("superseded_gcp_name_feb25" = "superseded_gcp_name_feb25"))
 ```
 
@@ -94,24 +94,22 @@ ggplot(pose_ms, aes(x = age_mo, y = prop, col = part)) +
 ```
 
 # Objects
-
 ```{r}
 objects <- read_csv("frame_data/yoloe_10k_frames.csv")
-
 objects_joined <- inner_join(objects, d, by = c("superseded_gcp_name_feb25"))
 
-any(recordings$superseded_gcp_name_feb25 == "00510002_2024-08-12_2_dfc73374a", na.rm=TRUE)
+# any(recordings$superseded_gcp_name_feb25 == "00510002_2024-08-12_2_dfc73374a", na.rm=TRUE)
 
-objects$superseded_gcp_name_feb25[!(objects$superseded_gcp_name_feb25 %in% recordings$superseded_gcp_name_feb25)]
+# objects$superseded_gcp_name_feb25[!(objects$superseded_gcp_name_feb25 %in% recordings$superseded_gcp_name_feb25)]
 ```
 
 
 ```{r}
 object_ms <- objects_joined |>
-  group_by(age_mo, superseded_gcp_name_feb25) |>
+  group_by(age_mo, subject_id, superseded_gcp_name_feb25) |>
   summarise(n = n(), 
             pixels = mean(masked_pixel_count, na.rm=TRUE)) |>
-  group_by(age_mo) |>
+  group_by(age_mo, subject_id) |>
   summarise(n_objs = mean(n), 
             n= n(), 
             pixels = mean(pixels, na.rm=TRUE))
@@ -119,29 +117,34 @@ object_ms <- objects_joined |>
 ```
 
 ```{r}
-ggplot(object_ms, aes(x = age_mo, y = n_objs)) + 
-  geom_point(aes(size = n)) + 
-  geom_smooth(method = "lm") +
+ggplot(object_ms, aes(x = age_mo, y = n_objs, col=subject_id)) + 
+  geom_point(aes(size = n), alpha=.2) + 
+  geom_smooth(method = "lm", alpha=.1) +
   ggtitle('Number of objects by age') +
   xlab('Age in months') +
-  ylab('Count objects detected')
+  ylab('Count objects detected') +
+  theme(legend.position = 'none')
 ```
 
 ```{r}
-ggplot(object_ms, aes(x = age_mo, y = pixels)) + 
-  geom_point(aes(size = n)) + 
-  geom_smooth(method = "lm")+
+ggplot(object_ms, aes(x = age_mo, y = pixels, col=subject_id)) + 
+  geom_point(aes(size = n), alpha=.2) + 
+  geom_smooth(method = "lm", alpha=.1) +
+  xlab('Age in months') +
+  theme(legend.position = 'none') +
   ggtitle('Size of objects by age') +
   xlab('Age in months') +
-  ylab('Average pixel count of detected objs')
+  ylab('Average pixel count of detected objs') 
 ```
 
-Calculate raw counts (not normalizing right now)
+Calculate raw counts (not normalizing here)
 ```{r}
 object_count <- objects_joined %>%
   group_by(class_name) %>%
   summarize(count = n())  %>%
-  arrange(count) 
+  arrange(count)  
+
+kable(object_count %>% arrange(-count))
 ```
 
 ```{R}
@@ -192,16 +195,20 @@ Join with aoa data
 object_freq_with_aoa <- object_freq %>%
   left_join(aoa) 
 ```
-
+```{r}
+object_freq_with_aoa <- object_freq %>%
+  left_join(aoa) %>%
+  # filter(!class_name %in% c('tv','book','person','toy','chair')) %>% # these seem like objects that contain multiple objects/content...
+  filter(!is.na(AoA)) # don't have some aoas
+```
 
 ```{r}
-ggplot(data=object_freq_with_aoa %>% filter(!is.na(AoA)), aes(x=freq, y=AoA, label=class_name)) +
+ggplot(data=object_freq_with_aoa, aes(x=freq, y=AoA, label=class_name)) +
   geom_point(alpha=.4) +
   xlab('Frequency of objects') +
   ylab('AoA') +
   ggrepel::geom_label_repel() +
   geom_smooth(method='lm')  +
   theme_few(base_size=10)  
-
 
 ```
