@@ -96,7 +96,7 @@ ggplot(pose_ms, aes(x = age_mo, y = prop, col = part)) +
 # Objects
 
 ```{r}
-objects <- read_csv("frame_data/yoloe_1k_frames_fixed_ids.csv")
+objects <- read_csv("frame_data/yoloe_10k_frames.csv")
 
 objects_joined <- inner_join(objects, d, by = c("superseded_gcp_name_feb25"))
 
@@ -110,38 +110,74 @@ objects$superseded_gcp_name_feb25[!(objects$superseded_gcp_name_feb25 %in% recor
 object_ms <- objects_joined |>
   group_by(age_mo, superseded_gcp_name_feb25) |>
   summarise(n = n(), 
-            pixels = mean(masked_pixel_count)) |>
+            pixels = mean(masked_pixel_count, na.rm=TRUE)) |>
   group_by(age_mo) |>
   summarise(n_objs = mean(n), 
             n= n(), 
-            pixels = mean(pixels))
+            pixels = mean(pixels, na.rm=TRUE))
   
-  
+```
+
+```{r}
 ggplot(object_ms, aes(x = age_mo, y = n_objs)) + 
   geom_point(aes(size = n)) + 
-  geom_smooth(method = "lm")
+  geom_smooth(method = "lm") +
+  ggtitle('Number of objects by age') +
+  xlab('Age in months') +
+  ylab('Count objects detected')
+```
 
+```{r}
 ggplot(object_ms, aes(x = age_mo, y = pixels)) + 
   geom_point(aes(size = n)) + 
-  geom_smooth(method = "lm")
+  geom_smooth(method = "lm")+
+  ggtitle('Size of objects by age') +
+  xlab('Age in months') +
+  ylab('Average pixel count of detected objs')
 ```
 
 Calculate raw counts (not normalizing right now)
 ```{r}
-object_freq <- objects_joined %>%
+object_count <- objects_joined %>%
   group_by(class_name) %>%
   summarize(count = n())  %>%
   arrange(count) 
 ```
 
-Plot top 50 objects in the 1k frame detections
+```{R}
+object_counts_expanded_dataframe <- objects_joined %>%
+  group_by(superseded_gcp_name_feb25, class_name) %>%
+  summarize(count = n()) %>%
+  ungroup() %>%
+  complete(superseded_gcp_name_feb25, class_name, fill = list(count = 0)) %>%
+  mutate(class_present = count>0)   %>%
+  filter(!is.na(class_name)) # this comes from frames that had nothing, but doesn't need to be in list of objects
+```
+
+```{R}
+object_freq <- object_counts_expanded_dataframe %>%
+  group_by(class_name) %>%
+  summarize(freq = mean(class_present)) %>%
+  arrange(freq)
+```
+
+Plot top 50 objects in the 10k frame detections
 ```{r}
-ggplot(data=object_freq %>% slice_max(n=50, order_by=count), aes(x=fct_reorder(class_name, count, .desc=FALSE), y=count)) +
+ggplot(data=object_count %>% slice_max(n=50, order_by=count), aes(x=fct_reorder(class_name, count, .desc=FALSE), y=count)) +
   theme_few(base_size=6) +
   geom_point(alpha=.8) +
   coord_flip() +
   xlab('Top 50 objects detected') +
-  ylab('# of detections in 1000 frames')
+  ylab('# of detections in 10000 frames')
+```
+
+```{r}
+ggplot(data=object_freq %>% slice_max(n=50, order_by=freq), aes(x=fct_reorder(class_name, freq, .desc=FALSE), y=freq)) +
+  theme_few(base_size=6) +
+  geom_point(alpha=.8) +
+  coord_flip() +
+  xlab('Top 50 objects detected') +
+  ylab('Freq of detections in 1000 frames')
 ```
 
 Load aoa data for specific items
@@ -154,15 +190,18 @@ aoa = read_csv(here::here('cdi_data_march_2025/MCDI_items_with_AoA.csv')) %>%
 Join with aoa data
 ```{r}
 object_freq_with_aoa <- object_freq %>%
-  left_join(aoa)
+  left_join(aoa) 
 ```
 
 
 ```{r}
-ggplot(data=object_freq_with_aoa, aes(x=count, y=AoA)) +
+ggplot(data=object_freq_with_aoa %>% filter(!is.na(AoA)), aes(x=freq, y=AoA, label=class_name)) +
   geom_point(alpha=.4) +
-  xlab('Count of objects')
+  xlab('Frequency of objects') +
   ylab('AoA') +
-  theme_few(base_size=6)  +
-  geom_smooth(method='lm')
+  ggrepel::geom_label_repel() +
+  geom_smooth(method='lm')  +
+  theme_few(base_size=10)  
+
+
 ```
