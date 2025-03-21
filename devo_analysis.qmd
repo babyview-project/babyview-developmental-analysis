@@ -97,26 +97,12 @@ ggplot(pose_ms, aes(x = age_mo, y = prop, col = part)) +
 
 ```{r}
 objects <- read_csv("frame_data/yoloe_1k_frames_fixed_ids.csv")
-length(unique(objects$superseded_gcp_name_feb25))
-```
 
-```{r}
 objects_joined <- inner_join(objects, d, by = c("superseded_gcp_name_feb25"))
-length(unique(objects_joined$superseded_gcp_name_feb25))
-```
 
-Spot checks. Some are missing because Bing (maybe 110?)
-
-```{r}
-objects$superseded_gcp_name_feb25[!(objects$superseded_gcp_name_feb25 %in% recordings$superseded_gcp_name_feb25)]
-
-any(objects$superseded_gcp_name_feb25 == "00510002_2024-08-12_2_dfc73374a", na.rm=TRUE)
 any(recordings$superseded_gcp_name_feb25 == "00510002_2024-08-12_2_dfc73374a", na.rm=TRUE)
 
-filter(recordings, unique_video_id == "recXBjCoaczhhbeef")$superseded_gcp_name_feb25
-"00510002_2024-08-12_2_dfc73374ae"
-
-unique(objects$superseded_gcp_name_feb25[!(objects$superseded_gcp_name_feb25 %in% recordings$superseded_gcp_name_feb25)])
+objects$superseded_gcp_name_feb25[!(objects$superseded_gcp_name_feb25 %in% recordings$superseded_gcp_name_feb25)]
 ```
 
 
@@ -130,29 +116,27 @@ object_ms <- objects_joined |>
             n= n(), 
             pixels = mean(pixels))
   
+  
 ggplot(object_ms, aes(x = age_mo, y = n_objs)) + 
   geom_point(aes(size = n)) + 
-  geom_smooth(method = "lm") + 
-  ylab("Number of objects in frame (average)") +
-  xlab("Age (months)")
+  geom_smooth(method = "lm")
 
 ggplot(object_ms, aes(x = age_mo, y = pixels)) + 
   geom_point(aes(size = n)) + 
-  geom_smooth(method = "lm") + 
-  ylab("Size of objects in frame (px)") +
-  xlab("Age (months)")
+  geom_smooth(method = "lm")
 ```
+
+Calculate raw counts (not normalizing right now)
 ```{r}
 object_freq <- objects_joined %>%
   group_by(class_name) %>%
   summarize(count = n())  %>%
-  arrange(count) %>%
-  slice_max(n=50, order_by=count)
+  arrange(count) 
 ```
 
+Plot top 50 objects in the 1k frame detections
 ```{r}
-
-ggplot(data=object_freq, aes(x=fct_reorder(class_name, count, .desc=FALSE), y=count)) +
+ggplot(data=object_freq %>% slice_max(n=50, order_by=count), aes(x=fct_reorder(class_name, count, .desc=FALSE), y=count)) +
   theme_few(base_size=6) +
   geom_point(alpha=.8) +
   coord_flip() +
@@ -160,7 +144,25 @@ ggplot(data=object_freq, aes(x=fct_reorder(class_name, count, .desc=FALSE), y=co
   ylab('# of detections in 1000 frames')
 ```
 
+Load aoa data for specific items
+```{r}
+aoa = read_csv(here::here('cdi_data_march_2025/MCDI_items_with_AoA.csv')) %>%
+  select(english_gloss, AoA) %>%
+  rename(class_name = english_gloss)
+```
+
+Join with aoa data
+```{r}
+object_freq_with_aoa <- object_freq %>%
+  left_join(aoa)
+```
+
 
 ```{r}
-aoa = read_csv(here::here('cdi_data_march_2025/MCDI_items_with_AoA.csv'))
+ggplot(data=object_freq_with_aoa, aes(x=count, y=AoA)) +
+  geom_point(alpha=.4) +
+  xlab('Count of objects')
+  ylab('AoA') +
+  theme_few(base_size=6)  +
+  geom_smooth(method='lm')
 ```
