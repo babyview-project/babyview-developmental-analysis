@@ -1,0 +1,192 @@
+---
+title: "Child-level CDI analyses"
+format: 
+  html:
+    toc: true
+    theme: flatly
+---
+
+```{r, message=F}
+library(tidyverse)
+library(here)
+library(lme4)
+
+knitr::opts_chunk$set(
+  message=F
+)
+```
+
+### Data loading
+```{r}
+cdi_all <- read_csv(here("cdi_all.csv"))
+
+OBJ_DATA_LOC <- here("../bv-objects/object-detection/data")
+all_objects <- read_csv(here(OBJ_DATA_LOC, "merged_objects.csv"))
+all_trans <- read_csv(here(OBJ_DATA_LOC, "merged_trans_annotated.csv"))
+all_cooc <- read_csv(here(OBJ_DATA_LOC, "merged_cooccurrences_filtered.csv"))
+
+metadata <- read_csv(here("recordings_processed.csv"))
+
+WINDOW_THRESHOLD = 5
+```
+
+### CDI preprocessing
+```{r}
+# the variable I want is completed_date
+# two methods: cumulative freq (from start to completed_date), or
+#              three-month-window freq (from completed_date - 3 months to completed_date)
+
+# filter down to just English
+cdi_admins <- cdi_all |> 
+  select(subject_id, age, sex, language, form, repeat_num, administration_id, completed_date) |> 
+  distinct() |> 
+  filter(language == "English (American)")
+
+cdi_trimmed <- cdi_all |> 
+  filter(lexical_category == "nouns") |> 
+  mutate(item_definition = item_definition |>
+           str_replace_all(c(
+             " \\(object\\)" = "",
+             " \\(animal\\)" = "",
+             " \\(food\\)" = "",
+             " \\(beverage\\)" = "",
+             " \\(not beverage\\)" = "",
+             "soda/pop" = "soda",
+             "tissue/kleenex" = "tissue"
+           ))) |> 
+  select(subject_id, age, sex, language, form, repeat_num, administration_id, completed_date,
+         item_definition, category, value) |> 
+  mutate(value = factor(value, levels = c("understands", "produces"), ordered = TRUE),
+         item_definition = tolower(item_definition)) |> 
+  group_by(subject_id, age, sex, language, form, repeat_num, administration_id, completed_date,
+           item_definition) |>
+  summarise(category = ifelse(length(category) == 1, category, category[1]),
+            value = max(value),
+            .groups = "drop")
+```
+
+### Annotation preprocessing
+```{r}
+# metadata date variable is date_time
+all_objects_dated <- all_objects |> 
+  left_join(metadata, by = join_by(superseded_gcp_name_feb25))
+
+all_trans_dated <- all_trans |> 
+  filter(upos == "NOUN") |> 
+  group_by(superseded_gcp_name_feb25, token) |>
+  summarise(token_count = n(), 
+            .groups = "drop") |> 
+  left_join(metadata, by = join_by(superseded_gcp_name_feb25))
+
+all_cooc_dated <- all_cooc |> 
+  left_join(all_trans, 
+            by = join_by(superseded_gcp_name_feb25, 
+                         utterance_id, 
+                         token_id,
+                         utterance,
+                         token,
+                         token_num, 
+                         token_start_time, 
+                         token_end_time, 
+                         speaker)) |> 
+  filter(upos == "NOUN") |> 
+  group_by(superseded_gcp_name_feb25, token) |>
+  summarise(cooccurrences_window = sum(min_diff <= WINDOW_THRESHOLD),
+            cooccurrences_video = n(),
+            .groups = "drop") |> 
+  left_join(metadata, by = join_by(superseded_gcp_name_feb25))
+```
+
+```{r}
+cdi_cumul <- cdi_admins |> 
+  left_join(metadata, 
+            by = join_by(subject_id == subject_id_internal, 
+                         completed_date >= date_time)) |> 
+  rename(age = age.x) |> 
+  group_by(subject_id, age, sex, language, form, repeat_num, administration_id, 
+           completed_date) |> 
+  summarise(total_duration = sum(floor(duration_sec), na.rm = TRUE),
+            .groups = "drop")
+
+merged_objects <- cdi_admins |> 
+  left_join(all_objects_dated, 
+            by = join_by(subject_id == subject_id_internal, 
+                         completed_date >= date_time)) |> 
+  rename(age = age.x, token = class_name, frames_with_object = n_frames) |> 
+  group_by(subject_id, age, sex, language, form, repeat_num, administration_id, 
+           completed_date, token) |>
+  summarise(frames_with_object = sum(frames_with_object, na.rm = TRUE),
+            .groups = "drop")
+
+merged_trans <- cdi_admins |> 
+  left_join(all_trans_dated, 
+            by = join_by(subject_id == subject_id_internal, 
+                         completed_date >= date_time)) |> 
+  filter(token %in% all_objects_dated$class_name) |> 
+  rename(age = age.x) |> 
+  group_by(subject_id, age, sex, language, form, repeat_num, administration_id, 
+           completed_date, token) |>
+  summarise(token_count = sum(token_count, na.rm = TRUE),
+            .groups = "drop")
+
+merged_cooc <- cdi_admins |> 
+  left_join(all_cooc_dated, 
+            by = join_by(subject_id == subject_id_internal, 
+                         completed_date >= date_time)) |> 
+  filter(token %in% all_objects_dated$class_name) |> 
+  rename(age = age.x) |> 
+  group_by(subject_id, age, sex, language, form, repeat_num, administration_id, 
+           completed_date, token) |>
+  summarise(cooccurrences_window = sum(cooccurrences_window, na.rm = TRUE),
+            cooccurrences_video = sum(cooccurrences_video, na.rm = TRUE),
+            .groups = "drop")
+
+merged_all <- cdi_trimmed |> 
+  left_join(cdi_cumul, 
+            by = join_by(subject_id, age, sex, language, form, repeat_num, 
+                         administration_id, completed_date)) |> 
+  left_join(merged_objects, 
+            by = join_by(subject_id, age, sex, language, form, 
+                         repeat_num, administration_id, 
+                         completed_date, item_definition == token)) |> 
+  left_join(merged_trans, 
+            by = join_by(subject_id, age, sex, language, form, 
+                         repeat_num, administration_id, 
+                         completed_date, item_definition == token)) |> 
+  left_join(merged_cooc, 
+            by = join_by(subject_id, age, sex, language, form, 
+                         repeat_num, administration_id, 
+                         completed_date, item_definition == token)) |> 
+  mutate(produces = ifelse(is.na(value), 0, ifelse(value == "produces", 1, 0))) |> 
+  filter(total_duration > 0) |> 
+  mutate(log_frame_prop = log(frames_with_object / total_duration),
+         log_token_prop = log(token_count / total_duration),
+         log_cooc_window_prop = log(cooccurrences_window / total_duration),
+         log_cooc_video_prop = log(cooccurrences_video / total_duration),
+         pmi_window = log_cooc_window_prop - log_frame_prop - log_token_prop,
+         pmi_video = log_cooc_video_prop - log_frame_prop - log_token_prop,) |> 
+  mutate(across(c(starts_with("log"), starts_with("pmi")), \(x) ifelse(is.infinite(x), NA, x)))
+```
+
+### Modelling
+```{r}
+cdi_mod <- glmer(produces ~ scale(log_frame_prop) + scale(log_token_prop) + 
+                   scale(log_cooc_window_prop) + scale(log_cooc_video_prop) + 
+                   (1 | subject_id) + (1 | item_definition),
+                 data = merged_all,
+                 family = binomial(link = "logit"),
+                 control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000)))
+
+cdi_mod |> summary()
+```
+
+```{r}
+cdi_mod_pmi <- glmer(produces ~ scale(log_frame_prop) + scale(log_token_prop) + 
+                   scale(pmi_window) + scale(pmi_video) + 
+                   (1 | subject_id) + (1 | item_definition),
+                 data = merged_all,
+                 family = binomial(link = "logit"),
+                 control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000)))
+
+cdi_mod_pmi |> summary()
+```

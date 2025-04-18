@@ -69,6 +69,7 @@ cdi_items <- read_csv(here("cdi_items.csv"))
 
 cdi_all <- cdi_all |> 
   left_join(cdi_items, by = join_by(language, form, item == webcdi_item))
-```
 
+write_csv(cdi_all, here("cdi_all.csv"))
+```
 
