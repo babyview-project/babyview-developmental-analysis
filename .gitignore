@@ -52,6 +52,7 @@ rsconnect/
 *_files/
 
 
-
+*.udpipe
+intermediates/
 .DS_Store
 */recordings_processed.csv
