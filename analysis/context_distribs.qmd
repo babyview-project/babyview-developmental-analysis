@@ -1,0 +1,167 @@
+---
+title: "context_distribs"
+format: html
+---
+
+```{r, message=F}
+library(tidyverse)
+library(lubridate)
+library(here)
+library(zoo)
+theme_set(theme_classic())
+
+knitr::opts_chunk$set(
+  message = FALSE
+)
+```
+
+```{r}
+all_trans_annotated <- read_csv(here("intermediates", "merged_trans_annotated.csv"))
+```
+
+
+## Location stats
+```{r}
+loc_files <- list.files(here("../../", "bv-contexts", "locations"),
+                        pattern = "\\.csv",
+                        full.names = T)
+
+all_locations <- map(loc_files, \(f) {
+  read_csv(f, col_select = c(image_path, location_options, location_probs, location),
+           col_types = "cccc")
+}) |> list_rbind()
+
+all_locations_cleaned <- all_locations |> 
+  mutate(image_path = image_path |> 
+           str_replace_all(".*sampled_frames/", "") |> 
+           str_replace_all("_processed", "") |> 
+           str_replace_all("\\.jpg", "")) |>
+  separate_wider_delim(image_path, delim = "/",
+                       names = c("superseded_gcp_name_feb25", "frame_num"))
+
+all_locations_avg <- all_locations_cleaned |> 
+  group_by(superseded_gcp_name_feb25) |>
+  mutate(locations_avg = rollapply(location, width = 5,
+                                    FUN = \(x) {
+                                      ux <- unique(x)
+                                      ux <- ux[!is.na(ux)]
+                                      counts <- tabulate(match(x, ux))
+                                      # break ties by favouring middle
+                                      counts[which(ux == x[3])] <- counts[which(ux == x[3])] + 0.5
+                                      ux[which.max(counts)]
+                                    },
+                                    partial = TRUE))
+```
+
+```{r}
+# function from https://github.com/npedrazzini/averageReducedFrequency/blob/master/ARF.R 
+ARF = function(df){
+  
+  # Convert tokens into numerical factor vector (each unique lempos assigned a number)
+  df = as.factor(df) # Stores df as character factor vector
+  num = as.integer(df) # Converts df to numerical factor vector
+  
+  n = length(df) # Length of corpus
+  nLempos = nlevels(df) # Number of unique lempos in df
+  
+  # Calculate position of every unique lempos
+  allpositions = map(1:nLempos, function(x) which(num == x))
+  
+  # Calculate the ARF with the formula
+  result = map(1:nLempos, function(x){
+    position = allpositions[[x]] # Positions of individual lemposes
+    
+    freq = length(position) # Number of occurrences of each lempos
+    chunk = n / freq # Length of each chunk 
+    
+    # Calculate the distance between all occurrences
+    dist = c(position[-1], n) - position
+    
+    # ARFs (i.e. 1/chunk of the sum of all the minima between each distance and the average distance [i.e. chunk])
+    sum(sapply(dist, function(x) min(x, chunk))) / chunk
+  })
+  
+  data.frame(word = levels(df), ARF = sapply(result, "[[", 1))
+  
+}
+```
+
+
+```{r}
+KEYNESS_CORRECTION = 10
+
+trans_by_loc <- all_trans_annotated |> 
+  mutate(frame_num = token_start_time |> as.numeric()) |> 
+  left_join(all_locations_avg,
+            by = join_by(superseded_gcp_name_feb25, frame_num))
+
+tokens_of_interest <- all_trans_annotated |> 
+  group_by(token) |> 
+  summarise(token_counts = n(),
+            .groups = "drop") |>
+  filter(token_counts >= 20 + KEYNESS_CORRECTION) |>
+  pull(token)
+
+locations_of_interest <- trans_by_loc |> 
+  filter(!is.na(locations_avg)) |> 
+  pull(locations_avg) |> 
+  unique()
+
+keyness <- map(locations_of_interest, \(loc) {
+  foc <- trans_by_loc |> 
+    filter(locations_avg == loc) |>
+    pull(token) |> 
+    ARF() |> 
+    rename(arf_focal = ARF)
+  ref <- trans_by_loc |> 
+    filter(locations_avg != loc) |> 
+    pull(token) |> 
+    ARF() |> 
+    rename(arf_reference = ARF)
+  foc |> 
+    left_join(ref, by = join_by(word)) |> 
+    mutate(arf_focal = arf_focal,
+           arf_reference = arf_reference,
+           keyness = arf_focal / arf_reference) |> 
+    rename(token = word) |> 
+    mutate(location = loc)
+}) |> list_rbind()
+
+arf_variability <- keyness |> 
+  group_by(token) |> 
+  summarise(arf_sd = sd(log(arf_focal)),
+            .groups = "drop")
+```
+
+```{r}
+trans_annotated_by_loc <- trans_by_loc |> 
+  filter(upos == "NOUN")
+
+keyness_annotated <- map(locations_of_interest, \(loc) {
+  foc <- trans_annotated_by_loc |> 
+    filter(locations_avg == loc) |>
+    pull(lemma) |> 
+    ARF() |> 
+    rename(arf_focal = ARF)
+  ref <- trans_annotated_by_loc |> 
+    filter(locations_avg != loc) |> 
+    pull(lemma) |> 
+    ARF() |> 
+    rename(arf_reference = ARF)
+  foc |> 
+    left_join(ref, by = join_by(word)) |> 
+    mutate(arf_focal = arf_focal,
+           arf_reference = arf_reference,
+           keyness = arf_focal / arf_reference) |> 
+    rename(token = word) |> 
+    mutate(location = loc)
+}) |> list_rbind()
+
+arf_variability_annotated <- keyness_annotated |> 
+  group_by(token) |> 
+  mutate(px = (arf_focal / sum(arf_focal, na.rm = TRUE)),
+            px_logpx = px * log(px, base = 2)) |> 
+  summarise(entropy = -sum(px_logpx),
+            .groups = "drop")
+```
+

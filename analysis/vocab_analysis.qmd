@@ -1,0 +1,77 @@
+---
+title: "Vocab analysis"
+format: html
+---
+
+```{r}
+# remotes::install_github("babyview-project/babyviewr")
+library(tidyverse)
+library(babyviewr)
+library(lubridate)
+library(ggthemes)
+library(here)
+library(wordbankr)
+```
+
+# Vocab
+CDI
+
+```{r}
+DATA_LOC = here("data", "cdi_data_march_2025")
+cdi_eng_wg <- read_csv(here(DATA_LOC, "babyview-english-wg_items.csv")) |> 
+  mutate(language = "English (American)", form = "WG")
+cdi_eng_ws <- read_csv(here(DATA_LOC, "babyview-english-ws_items.csv")) |> 
+  mutate(language = "English (American)", form = "WS")
+cdi_spa_wg <- read_csv(here(DATA_LOC, "babyview-spanish-wg_items.csv")) |> 
+  mutate(language = "Spanish (Mexican)", form = "WG")
+cdi_spa_ws <- read_csv(here(DATA_LOC, "babyview-spanish-ws_items.csv")) |> 
+  mutate(language = "Spanish (Mexican)", form = "WS")
+```
+
+Quick summary plot
+```{r}
+ggplot(cdi_eng_wg |> 
+         filter(completed) |> 
+         mutate(subject_id = paste0("S", sprintf("%08d", subject_id))),
+       aes(x = age,
+           y = `Words Produced`,
+           col = subject_id)) +
+  geom_line() +
+  theme_classic()
+
+ggplot(cdi_eng_ws |> 
+         filter(completed) |> 
+         mutate(subject_id = paste0("S", sprintf("%08d", subject_id))),
+       aes(x = age,
+           y = `Total Produced`,
+           col = subject_id)) +
+  geom_line() +
+  theme_classic()
+```
+
+Convert to long
+```{r}
+NUM_DEMOG_QNS = 85 # sorry for magic number-ing
+OUTPUT_LOC = here("intermediates", "cdi")
+
+cdi_all <- map(list(cdi_eng_wg, cdi_eng_ws, cdi_spa_wg, cdi_spa_ws),
+               \(cdi) {
+                 cdi |> 
+                   filter(completed) |> 
+                   pivot_longer(cols = (NUM_DEMOG_QNS+1):(which(colnames(cdi) == "benchmark age")-1),
+                                names_to = "item",
+                                values_to = "value") |> 
+                   mutate(birth_order = as.numeric(birth_order),
+                          caregiver_info = as.character(caregiver_info))
+               }) |> list_rbind() |> 
+  select(subject_id, age, sex, language, form, item, value, everything()) |> 
+  mutate(subject_id = paste0("S", sprintf("%08d", subject_id)))
+
+cdi_items <- read_csv(here(OUTPUT_LOC, "cdi_items.csv"))
+
+cdi_all <- cdi_all |> 
+  left_join(cdi_items, by = join_by(language, form, item == webcdi_item))
+
+write_csv(cdi_all, here(OUTPUT_LOC, "cdi_all.csv"))
+```
+
