@@ -50,3 +50,8 @@ rsconnect/
 
 *.html
 *_files/
+
+
+
+
+*/recordings_processed.csv
