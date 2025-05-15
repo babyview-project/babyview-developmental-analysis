@@ -10,6 +10,7 @@ format:
 library(tidyverse)
 library(here)
 library(lme4)
+library(GGally)
 
 knitr::opts_chunk$set(
   message=F
@@ -181,12 +182,92 @@ cdi_mod |> summary()
 ```
 
 ```{r}
-cdi_mod_pmi <- glmer(produces ~ scale(log_frame_prop) + scale(log_token_prop) + 
-                   scale(pmi_window) + scale(pmi_video) + 
+cdi_mod_notok <- glmer(produces ~ scale(log_frame_prop) + 
+                   scale(log_cooc_window_prop) + scale(log_cooc_video_prop) + 
                    (1 | subject_id) + (1 | item_definition),
                  data = merged_all,
                  family = binomial(link = "logit"),
                  control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000)))
 
-cdi_mod_pmi |> summary()
+cdi_mod_notok |> summary()
 ```
+
+```{r}
+cdi_mod_age <- glmer(produces ~ scale(age, scale = FALSE) +
+                   (1 | subject_id) + (1 | item_definition),
+                 data = merged_all,
+                 family = binomial(link = "logit"),
+                 control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000)))
+
+# age + freq
+cdi_mod_agefreq <- glmer(produces ~ scale(age, scale = FALSE) * scale(log_token_prop) +
+                   (1 | subject_id) + (1 | item_definition),
+                 data = merged_all,
+                 family = binomial(link = "logit"),
+                 control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000)))
+
+cdi_mod_agefreqfr <- glmer(produces ~ scale(age, scale = FALSE) * scale(log_token_prop) +
+                             scale(log_frame_prop) +
+                   (1 | subject_id) + (1 | item_definition),
+                 data = merged_all,
+                 family = binomial(link = "logit"),
+                 control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000)))
+
+cdi_mod_agefreqcooc <- glmer(produces ~ scale(age, scale = FALSE) * scale(log_token_prop) +
+                             scale(log_cooc_video_prop) +
+                   (1 | subject_id) + (1 | item_definition),
+                 data = merged_all,
+                 family = binomial(link = "logit"),
+                 control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000)))
+
+cdi_mod_agefreqcoocw <- glmer(produces ~ scale(age, scale = FALSE) * scale(log_token_prop) +
+                             scale(log_cooc_window_prop) +
+                   (1 | subject_id) + (1 | item_definition),
+                 data = merged_all,
+                 family = binomial(link = "logit"),
+                 control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000)))
+
+
+cdi_mod_notokvid <- glmer(produces ~ scale(log_frame_prop) + scale(log_token_prop) +
+                   scale(log_cooc_video_prop) + 
+                   (1 | subject_id) + (1 | item_definition),
+                 data = merged_all,
+                 family = binomial(link = "logit"),
+                 control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000)))
+
+cdi_mod_notokvid |> summary()
+```
+
+# First-pass visualisation
+
+```{r}
+ggplot(merged_all, aes(x = scale(log_token_prop), y = produces)) +
+  geom_jitter(alpha = .2, height = .1) +
+  geom_smooth(method = "glm", method.args = list(family = "binomial"))
+```
+
+```{r}
+ggplot(merged_all, aes(x = scale(log_frame_prop), y = produces)) +
+  geom_jitter(alpha = .2, height = .1) +
+  geom_smooth(method = "glm", method.args = list(family = "binomial"))
+```
+
+```{r}
+ggplot(merged_all, aes(x = scale(log_cooc_window_prop), y = produces)) +
+  geom_jitter(alpha = .2, height = .1) +
+  geom_smooth(method = "glm", method.args = list(family = "binomial"))
+```
+
+```{r}
+ggplot(merged_all, aes(x = scale(log_cooc_video_prop), y = produces)) +
+  geom_jitter(alpha = .2, height = .1) +
+  geom_smooth(method = "glm", method.args = list(family = "binomial"))
+```
+
+```{r}
+ggpairs(merged_all,
+        columns = c("log_frame_prop", "log_token_prop", 
+                    "log_cooc_window_prop", "log_cooc_video_prop"),
+        lower = list(continuous = wrap("points", alpha = 0.03)))
+```
+
