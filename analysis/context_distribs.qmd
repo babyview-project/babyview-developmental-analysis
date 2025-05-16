@@ -22,7 +22,7 @@ all_trans_annotated <- read_csv(here("intermediates", "merged_trans_annotated.cs
 
 ## Location stats
 ```{r}
-loc_files <- list.files(here("../../", "bv-contexts", "locations"),
+loc_files <- list.files(here("../", "bv-contexts", "locations"),
                         pattern = "\\.csv",
                         full.names = T)
 
@@ -51,6 +51,8 @@ all_locations_avg <- all_locations_cleaned |>
                                       ux[which.max(counts)]
                                     },
                                     partial = TRUE))
+
+write_csv(all_locations_avg, here("intermediates", "merged_locations.csv"))
 ```
 
 ```{r}

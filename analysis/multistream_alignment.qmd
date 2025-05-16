@@ -1,0 +1,106 @@
+---
+title: "multistream_alignment"
+format: html
+---
+
+```{r}
+library(tidyverse)
+library(here)
+
+theme_set(theme_bw() +
+            theme(strip.background = element_blank(),
+                  panel.grid = element_blank()))
+```
+
+```{r}
+DATA_LOC = here("data", "multistream_alignment")
+INTERMEDIATES_LOC = here("intermediates")
+
+vid_id <- "00220001_2024-02-05_2_e0769ef060"
+df_obj <- read_csv(here(DATA_LOC, str_c(vid_id, "_bounding_box_predictions.csv")))
+df_locs <- read_csv(here(INTERMEDIATES_LOC, "merged_locations.csv")) |> 
+  filter(superseded_gcp_name_feb25 == vid_id)
+df_trans <- read_csv(here(INTERMEDIATES_LOC, "merged_trans_annotated.csv")) |> 
+  filter(superseded_gcp_name_feb25 == vid_id)
+df_pose <- read_csv(here(INTERMEDIATES_LOC, "4M_with_NA_bbox_limbs.csv")) |> 
+  filter(superseded_gcp_name_feb25 == vid_id)
+```
+
+I think what I want is a df with these columns:
+- video_id (redundant but JIC)
+- timestamp
+- annotation stream (speech, location, etc.)
+- annotation (token, object, exact location)
+Let's do it one by one
+
+```{r}
+df_obj_cleaned <- df_obj |> 
+  select(superseded_gcp_name_feb25, timestamp = frame_id, annotation = class_name) |>
+  filter(annotation %in% c("plate", "apple", "bowl", "chair", "table")) |> 
+  mutate(stream = "objects",
+         timestamp = as.numeric(timestamp))
+
+df_locs_cleaned <- df_locs |> 
+  select(superseded_gcp_name_feb25, timestamp = frame_num, annotation = locations_avg) |>
+  mutate(stream = "locations",
+         timestamp = as.numeric(timestamp))
+
+df_speech_cleaned <- tibble(
+  superseded_gcp_name_feb25 = vid_id,
+  timestamp = df_obj_cleaned$timestamp,
+  stream = "speech"
+) |> left_join(df_trans |> 
+                 select(superseded_gcp_name_feb25, token_start_time, token_end_time, token) |>
+                 mutate(token_start_time = as.numeric(token_start_time),
+                                  token_end_time = as.numeric(token_end_time)), 
+               by = join_by(superseded_gcp_name_feb25,
+                            timestamp >= token_start_time, 
+                            timestamp <= token_end_time)) |> 
+  distinct() |> 
+  mutate(speech = ifelse(!is.na(token), "all speech", NA)) |> 
+  filter(!is.na(speech)) |> 
+  pivot_longer(cols = c(token, speech),
+               names_to = "type",
+               values_to = "annotation") |> 
+  filter(annotation %in% c("all speech", "more", "banana", "you", "want", "face")) |> 
+  select(-type, -token_start_time, -token_end_time)
+
+df_pose_cleaned <- df_pose |> 
+  select(superseded_gcp_name_feb25, timestamp = time_in_extended_iso, 
+         face = face_in_image, lh = left_hand_in_image, rh = right_hand_in_image) |>
+  mutate(stream = "pose",
+         timestamp = as.numeric(timestamp),
+         hand = pmin(1, lh + rh)) |> 
+  pivot_longer(cols = c(face, hand),
+               names_to = "annotation",
+               values_to = "annotation_value") |> 
+  filter(annotation_value == 1) |> 
+  arrange(timestamp) |> 
+  select(-lh, -rh, -annotation_value) |> 
+  distinct()
+```
+
+Bind everything
+```{r}
+df_full <- list(df_obj_cleaned,
+                 df_locs_cleaned,
+                 df_speech_cleaned,
+                 df_pose_cleaned) |> 
+  list_rbind()
+```
+
+Plot
+```{r}
+ggplot(df_full,
+       aes(x = timestamp,
+           y = annotation,
+           fill = stream)) +
+  geom_tile(width = 1, height = 1) +
+  facet_grid(stream ~ .,
+             scales = "free_y",
+             space = "free_y") +
+  theme(legend.position = "none")
+```
+
+
+
