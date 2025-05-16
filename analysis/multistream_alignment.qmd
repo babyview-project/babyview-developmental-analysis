@@ -6,6 +6,7 @@ format: html
 ```{r}
 library(tidyverse)
 library(here)
+library(glue)
 
 theme_set(theme_bw() +
             theme(strip.background = element_blank(),
@@ -13,93 +14,171 @@ theme_set(theme_bw() +
 ```
 
 ```{r}
-DATA_LOC = here("data", "multistream_alignment")
+OBJECTS_LOC = here("data", "frame_data", "cdi_allframes_1fps")
 INTERMEDIATES_LOC = here("intermediates")
 
-vid_id <- "00220001_2024-02-05_2_e0769ef060"
-df_obj <- read_csv(here(DATA_LOC, str_c(vid_id, "_bounding_box_predictions.csv")))
-df_locs <- read_csv(here(INTERMEDIATES_LOC, "merged_locations.csv")) |> 
-  filter(superseded_gcp_name_feb25 == vid_id)
-df_trans <- read_csv(here(INTERMEDIATES_LOC, "merged_trans_annotated.csv")) |> 
-  filter(superseded_gcp_name_feb25 == vid_id)
-df_pose <- read_csv(here(INTERMEDIATES_LOC, "4M_with_NA_bbox_limbs.csv")) |> 
-  filter(superseded_gcp_name_feb25 == vid_id)
+df_locs <- read_csv(here(INTERMEDIATES_LOC, "merged_locations.csv"))
+df_trans <- read_csv(here(INTERMEDIATES_LOC, "merged_trans_annotated.csv"))
+df_pose <- read_csv(here(INTERMEDIATES_LOC, "4M_with_NA_bbox_limbs.csv"))
 ```
 
-I think what I want is a df with these columns:
-- video_id (redundant but JIC)
-- timestamp
-- annotation stream (speech, location, etc.)
-- annotation (token, object, exact location)
-Let's do it one by one
-
+# Video summary
+Counting objects and tokens to choose annotations
 ```{r}
-df_obj_cleaned <- df_obj |> 
-  select(superseded_gcp_name_feb25, timestamp = frame_id, annotation = class_name) |>
-  filter(annotation %in% c("plate", "apple", "bowl", "chair", "table")) |> 
-  mutate(stream = "objects",
-         timestamp = as.numeric(timestamp))
-
-df_locs_cleaned <- df_locs |> 
-  select(superseded_gcp_name_feb25, timestamp = frame_num, annotation = locations_avg) |>
-  mutate(stream = "locations",
-         timestamp = as.numeric(timestamp))
-
-df_speech_cleaned <- tibble(
-  superseded_gcp_name_feb25 = vid_id,
-  timestamp = df_obj_cleaned$timestamp,
-  stream = "speech"
-) |> left_join(df_trans |> 
-                 select(superseded_gcp_name_feb25, token_start_time, token_end_time, token) |>
-                 mutate(token_start_time = as.numeric(token_start_time),
-                                  token_end_time = as.numeric(token_end_time)), 
-               by = join_by(superseded_gcp_name_feb25,
-                            timestamp >= token_start_time, 
-                            timestamp <= token_end_time)) |> 
-  distinct() |> 
-  mutate(speech = ifelse(!is.na(token), "all speech", NA)) |> 
-  filter(!is.na(speech)) |> 
-  pivot_longer(cols = c(token, speech),
-               names_to = "type",
-               values_to = "annotation") |> 
-  filter(annotation %in% c("all speech", "more", "banana", "you", "want", "face")) |> 
-  select(-type, -token_start_time, -token_end_time)
-
-df_pose_cleaned <- df_pose |> 
-  select(superseded_gcp_name_feb25, timestamp = time_in_extended_iso, 
-         face = face_in_image, lh = left_hand_in_image, rh = right_hand_in_image) |>
-  mutate(stream = "pose",
-         timestamp = as.numeric(timestamp),
-         hand = pmin(1, lh + rh)) |> 
-  pivot_longer(cols = c(face, hand),
-               names_to = "annotation",
-               values_to = "annotation_value") |> 
-  filter(annotation_value == 1) |> 
-  arrange(timestamp) |> 
-  select(-lh, -rh, -annotation_value) |> 
-  distinct()
+get_counts <- function(video_id) {
+  vid_obj <- read_csv(here(OBJECTS_LOC, glue("{video_id}_processed"), "bounding_box_predictions.csv"),
+                      show_col_types = FALSE)
+  vid_trans <- df_trans |> 
+    filter(superseded_gcp_name_feb25 == video_id)
+  vid_locs <- df_locs |> 
+    filter(superseded_gcp_name_feb25 == video_id)
+  
+  obj_sum <- vid_obj |> 
+    group_by(class_name) |> 
+    summarise(frames_with_object = n()) |>
+    rename(annotation = class_name)
+  
+  tok_sum <- vid_trans |> 
+    group_by(token) |> 
+    summarise(token_count = n()) |> 
+    rename(annotation = token)
+  
+  loc_sum <- vid_locs |> 
+    group_by(locations_avg) |> 
+    summarise(location_count = n()) |>
+    rename(annotation = locations_avg)
+  
+  full_sum <- full_join(obj_sum, tok_sum, by = join_by(annotation)) |> 
+    full_join(loc_sum, by = join_by(annotation))
+}
 ```
 
-Bind everything
 ```{r}
-df_full <- list(df_obj_cleaned,
-                 df_locs_cleaned,
-                 df_speech_cleaned,
-                 df_pose_cleaned) |> 
-  list_rbind()
+test_id <- "00220001_2024-02-05_2_e0769ef060"
+test_counts <- get_counts(test_id)
 ```
 
-Plot
+# Combine annotations
 ```{r}
-ggplot(df_full,
-       aes(x = timestamp,
-           y = annotation,
-           fill = stream)) +
-  geom_tile(width = 1, height = 1) +
-  facet_grid(stream ~ .,
-             scales = "free_y",
-             space = "free_y") +
-  theme(legend.position = "none")
+bind_annotations <- function(video_id,
+                             objects = "random",
+                             tokens = "random",
+                             k = 5, threshold = 5) {
+  vid_summary <- get_counts(video_id)
+  # if random, make choices
+  if (!is.vector(objects) && objects == "random") {
+    objects <- vid_summary |> 
+      filter(!is.na(frames_with_object),
+             frames_with_object >= threshold,
+             !annotation %in% c("hand", "face")) |>
+      sample_n(k) |> 
+      pull(annotation)
+  }
+  if (!is.vector(objects) && tokens == "random") {
+    tokens <- vid_summary |> 
+      filter(!is.na(token_count),
+             token_count >= threshold) |>
+      sample_n(k) |> 
+      pull(annotation)
+  }
+  
+  # objects
+  vid_obj <- read_csv(here(OBJECTS_LOC, glue("{video_id}_processed"), "bounding_box_predictions.csv"),
+                      show_col_types = FALSE)
+  vid_obj_cleaned <- vid_obj |> 
+    select(superseded_gcp_name_feb25, timestamp = frame_id, annotation = class_name) |>
+    filter(annotation %in% objects) |> 
+    mutate(stream = "objects",
+           timestamp = as.numeric(timestamp))
+  
+  # speech
+  vid_trans <- df_trans |> 
+    filter(superseded_gcp_name_feb25 == video_id)
+  vid_speech_cleaned <- tibble(
+    superseded_gcp_name_feb25 = video_id,
+    timestamp = vid_obj_cleaned$timestamp,
+    stream = "speech"
+  ) |> left_join(vid_trans |> 
+                   select(superseded_gcp_name_feb25, token_start_time, token_end_time, token) |>
+                   mutate(token_start_time = as.numeric(token_start_time),
+                          token_end_time = as.numeric(token_end_time)), 
+                 by = join_by(superseded_gcp_name_feb25,
+                              timestamp >= token_start_time, 
+                              timestamp <= token_end_time)) |> 
+    distinct() |> 
+    mutate(speech = ifelse(!is.na(token), "all speech", NA)) |> 
+    filter(!is.na(speech)) |> 
+    pivot_longer(cols = c(token, speech),
+                 names_to = "type",
+                 values_to = "annotation") |> 
+    filter(annotation %in% c("all speech", tokens)) |> 
+    select(-type, -token_start_time, -token_end_time)
+  
+  # locations
+  vid_locs <- df_locs |> 
+    filter(superseded_gcp_name_feb25 == video_id)
+  vid_locs_cleaned <- vid_locs |> 
+    select(superseded_gcp_name_feb25, timestamp = frame_num, annotation = locations_avg) |>
+    mutate(stream = "locations",
+           timestamp = as.numeric(timestamp))
+  
+  # pose
+  vid_pose <- df_pose |>
+    filter(superseded_gcp_name_feb25 == video_id)
+  vid_pose_cleaned <- vid_pose |> 
+    select(superseded_gcp_name_feb25, timestamp = time_in_extended_iso, 
+           face = face_in_image, lh = left_hand_in_image, rh = right_hand_in_image) |>
+    mutate(stream = "pose",
+           timestamp = as.numeric(timestamp),
+           hand = pmin(1, lh + rh)) |> 
+    pivot_longer(cols = c(face, hand),
+                 names_to = "annotation",
+                 values_to = "annotation_value") |> 
+    filter(annotation_value == 1) |> 
+    arrange(timestamp) |> 
+    select(-lh, -rh, -annotation_value) |> 
+    distinct()
+  
+  # combine
+  vid_full <- list(vid_obj_cleaned,
+                   vid_locs_cleaned,
+                   vid_speech_cleaned,
+                   vid_pose_cleaned) |> 
+    list_rbind()
+}
+```
+
+```{r}
+test_full <- bind_annotations(test_id,
+                              objects = c("table", "plate", "chair", "bowl", "apple"),
+                              tokens = c("you", "want", "more", "the", "banana"))
+```
+
+# Plot!
+```{r}
+STREAM_COLORS <- c("Objects" = "#e06666",
+                   "Pose" = "#f6b26b",
+                   "Locations" = "#93c47d",
+                   "Speech" = "#76a5af")
+
+make_kosie_plot <- function(full_annotations) {
+  full_annotations |> 
+    mutate(stream = str_to_sentence(stream),
+           annotation = annotation |> fct_infreq() |> fct_rev()) |> 
+    ggplot(aes(x = timestamp,
+               y = annotation,
+               fill = stream)) +
+    geom_tile(width = 1, height = 1) +
+    facet_grid(stream ~ .,
+               scales = "free_y",
+               space = "free_y") +
+    labs(x = "Time (s)",
+         y = "Annotation") +
+    scale_fill_manual(values = STREAM_COLORS) +
+    theme(legend.position = "none")
+}
+
+make_kosie_plot(test_full)
 ```
 
 
