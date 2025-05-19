@@ -813,3 +813,62 @@ ggplot(speaker_props, aes(x = age_mo, y = prop, col = speaker)) +
        size = "Total tokens")
 ```
 
+
+## Cooccurrence window signal
+We arbitrarily chose a cooccurrence window of ±5s. How does the relationship between cooccurrence frequency and AoA change with window size? Are the relevant windows asymmetric?
+
+We draw inspiration from the (in progress) Peekbank methods paper to construct a heatmap of correlation values with varying window sizes.
+
+```{r}
+merged_both <- read_csv(here("intermediates", "merged_cooccurrences_both.csv"))
+merged_both <- merged_both |> 
+  mutate(across(c(diff_to_start, diff_to_end), \(x) na_if(x, 99999)))
+```
+
+
+```{r}
+library(furrr)
+plan(multisession, workers = 4)
+# fix this to remove non-noun "CAN"s etc.
+
+cooccurrence_windows <- expand.grid(
+  before = seq(0, 500, by = 5),
+  after = seq(0, 500,  by = 5)
+) |> 
+  mutate(cor = future_map2(before, after, \(b, a) {
+    merged_both |> 
+      filter(diff_to_start <= b | diff_to_end <= a) |> 
+      group_by(token) |> 
+      summarise(cooccurrences = n(),
+                .groups = "drop") |>
+      left_join(eng_aoas, by = join_by(token == item_definition)) |>
+      summarise(cor_prod = cor(cooccurrences, produces, use = "pairwise.complete.obs"),
+                cor_comp = cor(cooccurrences, understands, use = "pairwise.complete.obs"),
+                .groups = "drop")
+  }))
+
+cooccurrence_windows_full <- cooccurrence_windows |> unnest(cor)
+```
+
+```{r}
+ggplot(cooccurrence_windows_full |> 
+         filter(before <= 100, after <= 100),
+       aes(x = before, y = after)) +
+  geom_tile(aes(fill = cor_prod)) +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red") +
+  labs(x = "Window before",
+       y = "Window after",
+       fill = "Correlation")
+```
+
+```{r}
+ggplot(cooccurrence_windows_full,
+       aes(x = before, y = after)) +
+  geom_tile(aes(fill = cor_comp)) +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red") +
+  labs(x = "Window before",
+       y = "Window after",
+       fill = "Correlation")
+```
+
+

@@ -20,6 +20,9 @@ INTERMEDIATES_LOC = here("intermediates")
 df_locs <- read_csv(here(INTERMEDIATES_LOC, "merged_locations.csv"))
 df_trans <- read_csv(here(INTERMEDIATES_LOC, "merged_trans_annotated.csv"))
 df_pose <- read_csv(here(INTERMEDIATES_LOC, "4M_with_NA_bbox_limbs.csv"))
+all_vids <- df_locs |> 
+  pull(superseded_gcp_name_feb25) |> 
+  unique()
 ```
 
 # Video summary
@@ -50,6 +53,8 @@ get_counts <- function(video_id) {
   
   full_sum <- full_join(obj_sum, tok_sum, by = join_by(annotation)) |> 
     full_join(loc_sum, by = join_by(annotation))
+  
+  full_sum
 }
 ```
 
@@ -66,7 +71,7 @@ bind_annotations <- function(video_id,
                              k = 5, threshold = 5) {
   vid_summary <- get_counts(video_id)
   # if random, make choices
-  if (!is.vector(objects) && objects == "random") {
+  if (length(objects) == 1 && objects == "random") {
     objects <- vid_summary |> 
       filter(!is.na(frames_with_object),
              frames_with_object >= threshold,
@@ -74,7 +79,7 @@ bind_annotations <- function(video_id,
       sample_n(k) |> 
       pull(annotation)
   }
-  if (!is.vector(objects) && tokens == "random") {
+  if (length(tokens) == 1 && tokens == "random") {
     tokens <- vid_summary |> 
       filter(!is.na(token_count),
              token_count >= threshold) |>
@@ -96,7 +101,7 @@ bind_annotations <- function(video_id,
     filter(superseded_gcp_name_feb25 == video_id)
   vid_speech_cleaned <- tibble(
     superseded_gcp_name_feb25 = video_id,
-    timestamp = vid_obj_cleaned$timestamp,
+    timestamp = vid_obj$frame_id |> as.numeric(),
     stream = "speech"
   ) |> left_join(vid_trans |> 
                    select(superseded_gcp_name_feb25, token_start_time, token_end_time, token) |>
@@ -106,7 +111,7 @@ bind_annotations <- function(video_id,
                               timestamp >= token_start_time, 
                               timestamp <= token_end_time)) |> 
     distinct() |> 
-    mutate(speech = ifelse(!is.na(token), "all speech", NA)) |> 
+    mutate(speech = ifelse(!is.na(token), "all speech", NA) |> as.character()) |> 
     filter(!is.na(speech)) |> 
     pivot_longer(cols = c(token, speech),
                  names_to = "type",
@@ -181,5 +186,46 @@ make_kosie_plot <- function(full_annotations) {
 make_kosie_plot(test_full)
 ```
 
+```{r}
+make_kosie_plot(bind_annotations(all_vids[203]))
+```
 
+```{r}
+make_kosie_plot(bind_annotations("00370002_2024-04-14_3_14a09138ad"))
+```
+
+```{r}
+df_loc_switches <- df_locs |> 
+  group_by(superseded_gcp_name_feb25) |> 
+  mutate(is_switch = ifelse(location != lag(location), 1, 0)) |>
+  summarise(num_switches = sum(is_switch, na.rm = TRUE))
+```
+
+- Harmonic mean over location probabilities
+- See whether different locations vary in terms of their object distribution entropies
+- See whether different locations vary in terms of their token distributions entropies
+- Try different thresholds for word frequency before getting keyness?
+- Look at relationship between word frequency and Whisper accuracy on val set
+
+
+
+
+More location cleaning, just trying out
+```{r}
+library(zoo)
+WIDTH = 60
+df_locs_cleaned <- df_locs |> 
+  group_by(superseded_gcp_name_feb25) |>
+  mutate(locations_avg = rollapply(location, width = WIDTH,
+                                   FUN = \(x) {
+                                     ux <- unique(x)
+                                     ux <- ux[!is.na(ux)]
+                                     counts <- tabulate(match(x, ux))
+                                     # break ties by favouring middle
+                                     counts[which(ux == x[ceiling((WIDTH+1)/2)])] <- 
+                                       counts[which(ux == x[ceiling((WIDTH+1)/2)])] + 0.5
+                                     ux[which.max(counts)]
+                                   },
+                                   partial = TRUE))
+```
 
