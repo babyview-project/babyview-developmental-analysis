@@ -15,13 +15,15 @@ library(GGally)
 knitr::opts_chunk$set(
   message=F
 )
+
+source(here("analysis", "theme.R"))
 ```
 
 ### Data loading
 ```{r}
 cdi_all <- read_csv(here("intermediates", "cdi", "cdi_all.csv"))
 
-OBJ_DATA_LOC <- here("../bv-objects/object-detection/data")
+OBJ_DATA_LOC <- here("intermediates")
 all_objects <- read_csv(here(OBJ_DATA_LOC, "merged_objects.csv"))
 all_trans <- read_csv(here(OBJ_DATA_LOC, "merged_trans_annotated.csv"))
 all_cooc <- read_csv(here(OBJ_DATA_LOC, "merged_cooccurrences_filtered.csv"))
@@ -271,3 +273,82 @@ ggpairs(merged_all,
         lower = list(continuous = wrap("points", alpha = 0.03)))
 ```
 
+```{r}
+p_word <- ggplot(merged_all, 
+                 aes(x = log_token_prop, y = produces)) +
+  geom_jitter(alpha = .1, height = .1) +
+  geom_smooth(aes(group = subject_id), 
+              method = "glm", method.args = list(family = "binomial"),
+              col = "#76a5af", linewidth = .1, se = FALSE) +
+  geom_smooth(method = "glm", method.args = list(family = "binomial"),
+              col = "#76a5af") +
+  coord_cartesian(xlim = c(-12.9, -5.2)) +
+  labs(x = "Log word frequency",
+       y = "Probability of production") +
+  annotate("text", x = -5.5, y = 1.2,
+           label = "***", col = "#76a5af")
+p_obj <- ggplot(merged_all, 
+                aes(x = log_frame_prop, y = produces)) +
+  geom_jitter(alpha = .1, height = .1) +
+  geom_smooth(aes(group = subject_id), 
+              method = "glm", method.args = list(family = "binomial"),
+              col = "#e06666", linewidth = .1, se = FALSE) +
+  geom_smooth(method = "glm", method.args = list(family = "binomial"),
+              col = "#e06666") +
+  coord_cartesian(xlim = c(-12.9, -0.4)) +
+  labs(x = "Log object frequency",
+       y = "Probability of production") +
+  annotate("text", x = -0.7, y = 1.2,
+           label = "ns", col = "#e06666")
+p_cooc <- ggplot(merged_all, 
+                 aes(x = log_cooc_window_prop, y = produces)) +
+  geom_jitter(alpha = .1, height = .1) +
+  geom_smooth(aes(group = subject_id), 
+              method = "glm", method.args = list(family = "binomial"),
+              col = "#b4a7d6", linewidth = .1, se = FALSE) +
+  geom_smooth(method = "glm", method.args = list(family = "binomial"),
+              col = "#b4a7d6") +
+  coord_cartesian(xlim = c(-12.9, -5.2)) +
+  labs(x = "Log cooccurrences",
+       y = "Probability of production") +
+  annotate("text", x = -5.5, y = 1.2,
+           label = "ns", col = "#b4a7d6")
+
+h_word <- ggplot(merged_all, 
+                 aes(x = log_token_prop)) +
+  geom_histogram(fill = "#76a5af") +
+  coord_cartesian(xlim = c(-12.9, -5.2)) +
+  labs(x = "Log word frequency",
+       y = "") +
+  theme(panel.border = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank())
+h_obj <- ggplot(merged_all, 
+                aes(x = log_frame_prop)) +
+  geom_histogram(fill = "#e06666") +
+  coord_cartesian(xlim = c(-12.9, -0.4)) +
+  labs(x = "Log object frequency",
+       y = "") +
+  theme(panel.border = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank())
+h_cooc <- ggplot(merged_all, 
+                 aes(x = log_cooc_window_prop)) +
+  geom_histogram(fill = "#b4a7d6") +
+  coord_cartesian(xlim = c(-12.9, -5.2)) +
+  labs(x = "Log cooccurrences",
+       y = "") +
+  theme(panel.border = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank())
+
+p_child <- (h_word + h_obj + h_cooc + 
+              p_word + p_obj + p_cooc) +
+  plot_layout(axes = "collect",
+              ncol = 3,
+              heights = c(1, 7)) &
+  scale_y_continuous(breaks = c(0, 0.5, 1))
+```

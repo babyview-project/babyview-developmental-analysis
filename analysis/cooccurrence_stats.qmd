@@ -16,7 +16,7 @@ library(udpipe)
 library(lme4)
 library(lmerTest)
 library(zoo)
-theme_set(theme_classic())
+source(here("analysis", "theme.R"))
 # ud_dl <- udpipe_download_model("english")
 ud_mod <- udpipe_load_model(here("english-ewt-ud-2.5-191206.udpipe"))
 
@@ -162,9 +162,77 @@ lm(produces ~ scale(log(cooccurrences)) + scale(log(frames_with_object)) + scale
   summary()
 ```
 
-What about PMI?
 ```{r}
 TOTAL_FRAMES = 3163675
+p_word <- ggplot(merged_all, 
+                 aes(x = log(token_count/TOTAL_FRAMES), y = produces)) +
+  geom_point(alpha = .7) +
+  geom_smooth(method = "lm", col = "#76a5af") +
+  coord_cartesian(xlim = c(-13.6, -6.2)) +
+  labs(x = "Log word frequency",
+       y = "Age of acquisition (production)") +
+  annotate("text", x = -6.5, y = 32.5,
+           label = "***", col = "#76a5af")
+p_obj <- ggplot(merged_all, 
+                aes(x = log(frames_with_object/TOTAL_FRAMES), y = produces)) +
+  geom_point(alpha = .7) +
+  geom_smooth(method = "lm", col = "#e06666") +
+  coord_cartesian(xlim = c(-10.6, -0.9)) +
+  labs(x = "Log object frequency",
+       y = "Age of acquisition (production)") +
+  annotate("text", x = -1.3, y = 32.5,
+           label = "ns", col = "#e06666")
+p_cooc <- ggplot(merged_all, 
+                 aes(x = log(cooccurrences/TOTAL_FRAMES), y = produces)) +
+  geom_point(alpha = .7) +
+  geom_smooth(method = "lm", col = "#b4a7d6") +
+  coord_cartesian(xlim = c(-15.2, -6.7)) +
+  labs(x = "Log cooccurrences",
+       y = "Age of acquisition (production)") +
+  annotate("text", x = -7.1, y = 32.5,
+           label = "ns", col = "#b4a7d6")
+
+h_word <- ggplot(merged_all, 
+                 aes(x = log(token_count/TOTAL_FRAMES))) +
+  geom_histogram(fill = "#76a5af") +
+  coord_cartesian(xlim = c(-13.6, -6.2)) +
+  labs(x = "Log word frequency",
+       y = "") +
+  # make panel have no border and no y axis 
+  theme(panel.border = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank())
+h_obj <- ggplot(merged_all, 
+                aes(x = log(frames_with_object/TOTAL_FRAMES))) +
+  geom_histogram(fill = "#e06666") +
+  coord_cartesian(xlim = c(-10.6, -0.9)) +
+  labs(x = "Log object frequency",
+       y = "") +
+  theme(panel.border = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank())
+h_cooc <- ggplot(merged_all, 
+                 aes(x = log(cooccurrences/TOTAL_FRAMES))) +
+  geom_histogram(fill = "#b4a7d6") +
+  coord_cartesian(xlim = c(-15.2, -6.7)) +
+  labs(x = "Log cooccurrences",
+       y = "") +
+  theme(panel.border = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank())
+
+p_freq <- (h_word + h_obj + h_cooc + 
+             p_word + p_obj + p_cooc) +
+  plot_layout(axes = "collect",
+              ncol = 3,
+              heights = c(1, 7))
+```
+
+What about PMI?
+```{r}
 merged_all_info <- merged_all |> 
   mutate(pmi = log(cooccurrences * TOTAL_FRAMES / (frames_with_object * token_count * 2 * WINDOW_THRESHOLD)),
          pmi = ifelse(is.infinite(pmi), NA, pmi)) # |> 
@@ -408,7 +476,7 @@ merged_info_plot <- bind_rows(merged_info_top, merged_info_bot)
 
 ggplot(merged_info_plot,
        aes(x = pmi, y = reorder(token, -pmi))) +
-  geom_col() +
+  geom_col(fill = "#8f4af0") +
   facet_grid(ifelse(pmi > 0, "Highest PMI", "Lowest PMI") |> 
                factor(levels = c("Lowest PMI", "Highest PMI")) ~ ., scales = "free") +
   labs(x = "Pointwise mutual information", y = "Object")
@@ -823,20 +891,31 @@ We draw inspiration from the (in progress) Peekbank methods paper to construct a
 merged_both <- read_csv(here("intermediates", "merged_cooccurrences_both.csv"))
 merged_both <- merged_both |> 
   mutate(across(c(diff_to_start, diff_to_end), \(x) na_if(x, 99999)))
+
+merged_both_cleaned <- merged_both |> 
+  left_join(all_trans_annotated,
+            by = join_by(superseded_gcp_name_feb25, 
+                         utterance_id, 
+                         token_id,
+                         utterance,
+                         token,
+                         token_start_time, 
+                         token_end_time, 
+                         speaker)) |> 
+  filter(upos == "NOUN")
 ```
 
 
 ```{r}
 library(furrr)
 plan(multisession, workers = 4)
-# fix this to remove non-noun "CAN"s etc.
 
 cooccurrence_windows <- expand.grid(
   before = seq(0, 500, by = 5),
   after = seq(0, 500,  by = 5)
 ) |> 
   mutate(cor = future_map2(before, after, \(b, a) {
-    merged_both |> 
+    merged_both_cleaned |> 
       filter(diff_to_start <= b | diff_to_end <= a) |> 
       group_by(token) |> 
       summarise(cooccurrences = n(),
@@ -845,27 +924,25 @@ cooccurrence_windows <- expand.grid(
       summarise(cor_prod = cor(cooccurrences, produces, use = "pairwise.complete.obs"),
                 cor_comp = cor(cooccurrences, understands, use = "pairwise.complete.obs"),
                 .groups = "drop")
-  }))
-
-cooccurrence_windows_full <- cooccurrence_windows |> unnest(cor)
+  })) |> 
+  unnest(cor)
 ```
 
 ```{r}
-ggplot(cooccurrence_windows_full |> 
-         filter(before <= 100, after <= 100),
+ggplot(cooccurrence_windows,
        aes(x = before, y = after)) +
   geom_tile(aes(fill = cor_prod)) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red") +
+  # scale_fill_gradient2(low = "blue", mid = "white", high = "red") +
   labs(x = "Window before",
        y = "Window after",
        fill = "Correlation")
 ```
 
 ```{r}
-ggplot(cooccurrence_windows_full,
+ggplot(cooccurrence_windows,
        aes(x = before, y = after)) +
   geom_tile(aes(fill = cor_comp)) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red") +
+  # scale_fill_gradient2(low = "blue", mid = "white", high = "red") +
   labs(x = "Window before",
        y = "Window after",
        fill = "Correlation")

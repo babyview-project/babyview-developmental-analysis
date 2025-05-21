@@ -7,8 +7,16 @@ format: html
 library(tidyverse)
 library(lubridate)
 library(here)
+library(glue)
 library(zoo)
-theme_set(theme_classic())
+library(tidytext)
+library(topicmodels)
+library(stopwords)
+library(patchwork)
+
+source(here("analysis", "ARF.R"))
+source(here("analysis", "load_aoas.R"))
+source(here("analysis", "theme.R"))
 
 knitr::opts_chunk$set(
   message = FALSE
@@ -20,8 +28,8 @@ all_trans_annotated <- read_csv(here("intermediates", "merged_trans_annotated.cs
 ```
 
 
-## Location stats
-```{r}
+# Locations and tokens
+```{r eval=F}
 loc_files <- list.files(here("../", "bv-contexts", "locations"),
                         pattern = "\\.csv",
                         full.names = T)
@@ -56,46 +64,19 @@ write_csv(all_locations_avg, here("intermediates", "merged_locations.csv"))
 ```
 
 ```{r}
-# function from https://github.com/npedrazzini/averageReducedFrequency/blob/master/ARF.R 
-ARF = function(df){
-  
-  # Convert tokens into numerical factor vector (each unique lempos assigned a number)
-  df = as.factor(df) # Stores df as character factor vector
-  num = as.integer(df) # Converts df to numerical factor vector
-  
-  n = length(df) # Length of corpus
-  nLempos = nlevels(df) # Number of unique lempos in df
-  
-  # Calculate position of every unique lempos
-  allpositions = map(1:nLempos, function(x) which(num == x))
-  
-  # Calculate the ARF with the formula
-  result = map(1:nLempos, function(x){
-    position = allpositions[[x]] # Positions of individual lemposes
-    
-    freq = length(position) # Number of occurrences of each lempos
-    chunk = n / freq # Length of each chunk 
-    
-    # Calculate the distance between all occurrences
-    dist = c(position[-1], n) - position
-    
-    # ARFs (i.e. 1/chunk of the sum of all the minima between each distance and the average distance [i.e. chunk])
-    sum(sapply(dist, function(x) min(x, chunk))) / chunk
-  })
-  
-  data.frame(word = levels(df), ARF = sapply(result, "[[", 1))
-  
-}
+all_locations_avg <- read_csv(here("intermediates", "merged_locations.csv"))
+```
+
+```{r}
+trans_by_loc <- all_trans_annotated |> 
+  mutate(frame_num = token_start_time |> as.numeric()) |> 
+  left_join(all_locations_avg |> mutate(frame_num = as.numeric(frame_num)),
+            by = join_by(superseded_gcp_name_feb25, frame_num))
 ```
 
 
-```{r}
+```{r eval=F}
 KEYNESS_CORRECTION = 10
-
-trans_by_loc <- all_trans_annotated |> 
-  mutate(frame_num = token_start_time |> as.numeric()) |> 
-  left_join(all_locations_avg,
-            by = join_by(superseded_gcp_name_feb25, frame_num))
 
 tokens_of_interest <- all_trans_annotated |> 
   group_by(token) |> 
@@ -135,7 +116,7 @@ arf_variability <- keyness |>
             .groups = "drop")
 ```
 
-```{r}
+```{r eval=F}
 trans_annotated_by_loc <- trans_by_loc |> 
   filter(upos == "NOUN")
 
@@ -166,4 +147,312 @@ arf_variability_annotated <- keyness_annotated |>
   summarise(entropy = -sum(px_logpx),
             .groups = "drop")
 ```
+
+# Birth of a word analysis
+KL between each word and the grand average distribution
+Take residuals from log KL ~ log freq
+
+## Spatial distinctiveness
+```{r}
+EPSILON = 1e-6
+
+tok_distrib_avg <- trans_by_loc |> 
+  filter(!is.na(locations_avg)) |> 
+  group_by(locations_avg) |> 
+  summarise(token_count_by_loc = n(),
+            .groups = "drop") |> 
+  mutate(token_freq_by_loc = token_count_by_loc / sum(token_count_by_loc))
+
+tok_distrib_byword <- trans_by_loc |> 
+  filter(!is.na(locations_avg)) |> 
+  group_by(token, locations_avg) |> 
+  summarise(token_count_by_loc = n(),
+            .groups = "drop_last") |> 
+  mutate(token_freq_by_loc = token_count_by_loc / sum(token_count_by_loc))
+
+tok_kl <- tibble(token = unique(trans_by_loc$token)) |> 
+  crossing(tok_distrib_avg) |> 
+  left_join(tok_distrib_byword,
+            by = join_by(token, locations_avg)) |> 
+  mutate(token_freq_by_loc.y = replace_na(token_freq_by_loc.y, EPSILON),
+         kl = token_freq_by_loc.x * log(token_freq_by_loc.x / token_freq_by_loc.y, base = 2)) |>
+  group_by(token) |> 
+  summarise(kl = sum(kl, na.rm = TRUE), 
+                .groups = "drop")
+
+tok_freq <- trans_by_loc |> 
+  group_by(token) |> 
+  summarise(count = n(),
+            .groups = "drop")
+
+tok_location_distinctiveness <- tok_kl |> 
+  left_join(tok_freq, by = join_by(token))
+tok_location_mod <- lm(log(kl) ~ log(count),
+              data = tok_location_distinctiveness)
+tok_location_distinctiveness <- tok_location_distinctiveness |> 
+  mutate(kl_residual = tok_location_mod$residuals)
+```
+
+## Temporal distinctiveness
+```{r}
+demogs <- read_csv(here("data", "recordings_processed.csv"))
+
+tok_temporal <- trans_by_loc |> 
+  left_join(demogs |> select(
+    superseded_gcp_name_feb25,
+    subject_id_internal,
+    start_time
+  ), by = join_by(superseded_gcp_name_feb25)) |> 
+  mutate(timestamp = (start_time + as.difftime(token_start_time)) |> hms::as_hms(),
+         time_bin = cut(as.numeric(timestamp), 
+                        breaks = c(0, 2, 5, 8, 11, 14, 17, 20, 23, 24) * 3600, 
+                        labels = c("2300-0200h", "0200-0500h", "0500-0800h",
+                                   "0800-1100h", "1100-1400h", "1400-1700h",
+                                   "1700-2000h", "2000-2300h", "2300-0200h"),
+                        include.lowest = TRUE))
+
+tok_temporal_avg <- tok_temporal |> 
+  filter(!is.na(timestamp)) |> 
+  group_by(time_bin) |> 
+  summarise(token_count_by_time = n(),
+            .groups = "drop") |> 
+  mutate(token_freq_by_time = token_count_by_time / sum(token_count_by_time))
+
+tok_temporal_byword <- tok_temporal |> 
+  filter(!is.na(timestamp)) |> 
+  group_by(token, time_bin) |> 
+  summarise(token_count_by_time = n(),
+            .groups = "drop_last") |> 
+  mutate(token_freq_by_time = token_count_by_time / sum(token_count_by_time))
+
+tok_temporal_kl <- tibble(token = unique(trans_by_loc$token)) |> 
+  crossing(tok_temporal_avg) |> 
+  left_join(tok_temporal_byword,
+            by = join_by(token, time_bin)) |> 
+  mutate(token_freq_by_time.y = replace_na(token_freq_by_time.y, EPSILON),
+         kl = token_freq_by_time.x * log(token_freq_by_time.x / token_freq_by_time.y, base = 2)) |>
+  group_by(token) |> 
+  summarise(kl = sum(kl, na.rm = TRUE), 
+                .groups = "drop")
+
+tok_temporal_distinctiveness <- tok_temporal_kl |> 
+  left_join(tok_freq, by = join_by(token))
+tok_temporal_mod <- lm(log(kl) ~ log(count),
+              data = tok_temporal_distinctiveness)
+tok_temporal_distinctiveness <- tok_temporal_distinctiveness |> 
+  mutate(kl_residual = tok_temporal_mod$residuals)
+```
+
+## Topic distinctiveness
+```{r}
+trans_by_topic <- trans_by_loc |> 
+  mutate(timestamp = as.numeric(token_start_time),
+         timestamp_bin = cut(timestamp, 
+                             breaks = c(0, 10, 20, 30, 40, 50, 60) * 60,
+                             labels = c("0-10m", "10-20m", "20-30m",
+                                        "30-40m", "40-50m", "50-60m"),
+                             include.lowest = TRUE),
+         document = glue("{superseded_gcp_name_feb25}_{timestamp_bin}"))
+tok_remove_infreq <- trans_by_loc |> 
+  group_by(lemma) |> 
+  summarise(count = n(),
+            .groups = "drop") |> 
+  filter(count <= 5)
+tok_remove_fewdocs <- trans_by_topic |> 
+  group_by(lemma, document) |> 
+  summarise(count = n(),
+            .groups = "drop_last") |> 
+  summarise(n_docs = n(),
+            .groups = "drop") |> 
+  filter(n_docs <= 4)
+
+trans_by_topic_cleaned <- trans_by_topic |> 
+  filter(!token %in% stopwords("en"),
+         !lemma %in% tok_remove_infreq$lemma,
+         !lemma %in% tok_remove_fewdocs$lemma)
+trans_by_topic_dtm <- trans_by_topic_cleaned |> 
+  count(document, lemma) |> 
+  cast_dtm(document, lemma, n)
+```
+
+```{r eval=F}
+trans_lda <- LDA(trans_by_topic_dtm, k = 25,
+                 control = list(seed = 42))
+saveRDS(trans_lda, here("intermediates", "trans_lda.rds"))
+```
+
+```{r}
+trans_lda <- readRDS(here("intermediates", "trans_lda.rds"))
+```
+
+```{r}
+doc_topics <- tidy(trans_lda, matrix = "gamma")
+trans_by_topic_out <- trans_by_topic |> 
+  left_join(doc_topics, by = join_by(document),
+            relationship = "many-to-many")
+trans_by_topic_token <- trans_by_topic_out |> 
+  group_by(token, topic) |> 
+  summarise(topic_weight = sum(gamma) / n(),
+            .groups = "drop")
+trans_by_topic_avg <- trans_by_topic_out |> 
+  group_by(topic) |> 
+  summarise(topic_weight = sum(gamma) / n(),
+            .groups = "drop")
+
+tok_topic_kl <- tibble(token = unique(trans_by_loc$token)) |> 
+  crossing(trans_by_topic_avg) |> 
+  left_join(trans_by_topic_token,
+            by = join_by(token, topic)) |> 
+  mutate(topic_weight.y = replace_na(topic_weight.y, EPSILON),
+         kl = topic_weight.x * log(topic_weight.x / topic_weight.y, base = 2)) |>
+  group_by(token) |> 
+  summarise(kl = sum(kl, na.rm = TRUE), 
+                .groups = "drop")
+
+tok_topic_distinctiveness <- tok_topic_kl |> 
+  left_join(tok_freq, by = join_by(token))
+tok_topic_mod <- lm(log(kl) ~ log(count),
+              data = tok_topic_distinctiveness)
+tok_topic_distinctiveness <- tok_topic_distinctiveness |> 
+  mutate(kl_residual = tok_topic_mod$residuals)
+```
+
+## AoA prediction
+```{r}
+eng_aoas <- load_eng_aoas()
+
+eng_aoas_pred <- eng_aoas |> 
+  rename(token = item_definition) |> 
+  mutate(token = tolower(token)) |> 
+  left_join(tok_freq, by = join_by(token)) |> 
+  mutate(freq = count / sum(count, na.rm = TRUE)) |> 
+  left_join(tok_location_distinctiveness |> 
+              select(token, spatial_distinctiveness = kl_residual),
+            by = join_by(token)) |>
+  left_join(tok_temporal_distinctiveness |> 
+              select(token, temporal_distinctiveness = kl_residual),
+            by = join_by(token)) |>
+  left_join(tok_topic_distinctiveness |> 
+              select(token, topic_distinctiveness = kl_residual),
+            by = join_by(token))
+```
+
+```{r}
+aoa_distinctiveness_mod_p <- lm(produces ~ log(freq) + spatial_distinctiveness +
+                                  temporal_distinctiveness + topic_distinctiveness,
+                                data = eng_aoas_pred)
+aoa_distinctiveness_mod_u <- lm(understands ~ log(freq) + spatial_distinctiveness +
+                                  temporal_distinctiveness + topic_distinctiveness,
+                                data = eng_aoas_pred)
+```
+
+Some quick viz
+```{r}
+p_spatial <- ggplot(eng_aoas_pred, 
+                    aes(x = spatial_distinctiveness, y = produces)) +
+  geom_point(alpha = .7) +
+  geom_smooth(method = "lm", col = "#3cb7c7") +
+  coord_cartesian(xlim = c(-4, 2.2)) +
+  labs(x = "Spatial distinctiveness",
+       y = "Age of acquisition (production)") +
+  annotate("text", x = 1.8, y = 34,
+           label = "***", col = "#3cb7c7")
+p_temporal <- ggplot(eng_aoas_pred, 
+                      aes(x = temporal_distinctiveness, y = produces)) +
+  geom_point(alpha = .7) +
+  geom_smooth(method = "lm", col = "#9e42db") +
+  coord_cartesian(xlim = c(-4, 2.5)) +
+  labs(x = "Temporal distinctiveness",
+       y = "Age of acquisition (production)") +
+  annotate("text", x = 2.1, y = 34,
+           label = "ns", col = "#9e42db")
+p_topic <- ggplot(eng_aoas_pred, 
+                   aes(x = topic_distinctiveness, y = produces)) +
+  geom_point(alpha = .7) +
+  geom_smooth(method = "lm", col = "#de913a") +
+  coord_cartesian(xlim = c(-2.5, 2.3)) +
+  labs(x = "Topic distinctiveness",
+       y = "Age of acquisition (production)") +
+  annotate("text", x = 2, y = 34,
+           label = "***", col = "#de913a")
+
+h_spatial <- ggplot(eng_aoas_pred, 
+                    aes(x = spatial_distinctiveness)) +
+  geom_histogram(fill = "#3cb7c7") +
+  coord_cartesian(xlim = c(-4, 2.2)) +
+  labs(x = "Spatial distinctiveness",
+       y = "") +
+  # make panel have no border and no y axis 
+  theme(panel.border = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank())
+h_temporal <- ggplot(eng_aoas_pred, 
+                      aes(x = temporal_distinctiveness)) +
+  geom_histogram(fill = "#9e42db") +
+  coord_cartesian(xlim = c(-4, 2.5)) +
+  labs(x = "Temporal distinctiveness",
+       y = "") +
+  theme(panel.border = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank())
+h_topic <- ggplot(eng_aoas_pred, 
+                   aes(x = topic_distinctiveness)) +
+  geom_histogram(fill = "#de913a") +
+  coord_cartesian(xlim = c(-2.5, 2.3)) +
+  labs(x = "Topic distinctiveness",
+       y = "") +
+  theme(panel.border = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank())
+
+p_distinctiveness <- (h_spatial + h_temporal + h_topic + 
+  p_spatial + p_temporal + p_topic) +
+  plot_layout(axes = "collect",
+              ncol = 3,
+              heights = c(1, 7))
+```
+
+
+# Locations and objects
+```{r}
+obj_files <- list.files(here("data", "frame_data", "cdi_allframes_1fps"),
+                        pattern = "\\.csv", recursive = TRUE, 
+                        full.names = T)
+
+all_objects <- map(obj_files, \(f) {
+  tryCatch(
+    read_csv(f, col_select = c(superseded_gcp_name_feb25,
+                               time_in_extended_iso, frame_id,
+                               class_name, confidence, masked_pixel_count),
+             show_col_types = FALSE),
+    error = function(e) {
+      read_csv(f, col_select = c(superseded_gcp_name_feb25,
+                                 time_in_extended_iso, frame_number,
+                                 class_name, confidence, masked_pixel_count),
+               show_col_types = FALSE) |> 
+        rename(frame_id = frame_number)
+    }
+  )
+}) |> list_rbind()
+```
+
+```{r}
+all_objects_loc <- all_objects |> 
+  left_join(all_locations_avg,
+            by = join_by(superseded_gcp_name_feb25, frame_id == frame_num))
+```
+
+```{r}
+all_objects_loc_cleaned <- all_objects_loc |> 
+  filter(confidence >= 0.3)
+```
+
+```{r}
+
+```
+
+
 
