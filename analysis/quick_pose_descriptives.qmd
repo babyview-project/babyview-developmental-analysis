@@ -1,0 +1,104 @@
+---
+title: "BabyView Developmental Analysis"
+format: html
+---
+
+```{r}
+# remotes::install_github("babyview-project/babyviewr")
+library(tidyverse)
+library(babyviewr)
+library(lubridate)
+library(ggthemes)
+library(kableExtra)
+library(here)
+
+DATA_LOC = here("data")
+```
+
+```{r}
+# Load the data
+participants <- babyviewr::get_participant_data(include_demographics = TRUE)
+recordings <- babyviewr::get_main_recording_data(include_luna = TRUE)
+```
+
+Load in the pose detedctions for 4M sampled frames
+```{r}
+poses <- read_csv(here(DATA_LOC, "frame_data", "4M_pose_collated.csv"))
+```
+
+Looks like a fair amount  (1M) off the sampled frames are from Bing or Luna -- not in including these in analysis.
+```{r}
+length(poses$superseded_gcp_name_feb25[!(poses$superseded_gcp_name_feb25 %in% recordings$superseded_gcp_name_feb25)])
+
+
+```
+
+Merge in the data now with inner join
+```{r}
+poses_joined <- inner_join(poses, d, by = c("superseded_gcp_name_feb25" = "superseded_gcp_name_feb25"))
+```
+
+
+```{r}
+pose_ms <- poses_joined |>
+  group_by(age_mo) |>
+  summarise(n = n(), 
+            body = mean(body_in_image), 
+            face = mean(face_in_image), 
+            hand = mean(hands_in_image)) |>
+  pivot_longer(cols = c("body", "face", "hand"), 
+               names_to = "part", values_to = "prop")
+
+pose_indiv <- poses_joined |>
+  group_by(subject_id_internal,age_mo) |>
+  summarise(n = n(), 
+            hours_of_data = unique(hours_of_data),
+            body = mean(body_in_image), 
+            face = mean(face_in_image), 
+            hand = mean(hands_in_image)) |>
+  pivot_longer(cols = c("body", "face", "hand"), 
+               names_to = "part", values_to = "prop")
+  
+```
+
+Group level plot
+```{R}
+ggplot(pose_ms, aes(x = age_mo, y = prop, col = part)) + 
+  geom_point(aes(size = n)) + 
+  geom_smooth(method = "lm")
+```
+
+Individual subs
+```{R}
+ggplot(pose_indiv %>% filter(hours_of_data>25 & part!='body'), aes(x = age_mo, y = prop, col = part)) + 
+  geom_point(aes(size = n, weights=2), alpha=.2, span=5) +
+  geom_smooth(aes(group=part, fill=part), span=20) +
+  ylab('Proportion  detected') +
+  xlab('Age (in months)') +
+  facet_wrap(~subject_id_internal, nrow=4) +
+  theme(legend.position='none') +
+    scale_color_manual(values = c("#1266a2","#CB4B16"), name = "")  +
+  scale_fill_manual(values = c("#1266a2","#CB4B16"), name = "") +
+  theme_few() +
+  theme(legend.position='none') 
+
+
+ggsave('poses_by_subject.png', width=6, height=6)
+```
+
+```{R}
+
+ggplot(pose_indiv %>% filter(hours_of_data>50 & part!='body'), aes(x = age_mo, y = prop, col = part)) + 
+  geom_point(aes(size = n), alpha=.2) +
+  geom_smooth(aes(group=part, fill=part), span=20) +
+  ylab('Proportion  detected') +
+  xlab('Age (in months)') +
+  facet_wrap(~subject_id_internal, nrow=2) +
+  theme(legend.position='none') +
+    scale_color_manual(values = c("#1266a2","#CB4B16"), name = "")  +
+  scale_fill_manual(values = c("#1266a2","#CB4B16"), name = "") +
+  theme_few() +
+  theme(legend.position='none')
+
+```
+
