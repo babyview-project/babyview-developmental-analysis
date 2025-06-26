@@ -49,6 +49,21 @@ pose_ms <- poses_joined |>
   pivot_longer(cols = c("body", "face", "hand"), 
                names_to = "part", values_to = "prop")
 
+```
+
+```{r}
+pose_diff <- poses_joined |>
+  group_by(age_mo) |>
+  summarise(n = n(), 
+            body = mean(body_in_image), 
+            face = mean(face_in_image), 
+            hand = mean(hands_in_image)) |>
+  mutate(diff = face - hand)
+  
+```
+
+
+```{r}
 pose_indiv <- poses_joined |>
   group_by(subject_id_internal,age_mo) |>
   summarise(n = n(), 
@@ -61,7 +76,32 @@ pose_indiv <- poses_joined |>
   
 ```
 
+```{r}
+pose_indiv_diff <- poses_joined |>
+  group_by(subject_id_internal,age_mo) |>
+  summarise(n = n(), 
+            hours_of_data = unique(hours_of_data),
+            body = mean(body_in_image), 
+            face = mean(face_in_image), 
+            hand = mean(hands_in_image)) |>
+  mutate(diff = face - hand)
+
+```
+
+
 Group level plot
+```{R}
+ggplot(pose_ms, aes(x = age_mo, y = prop, col = part)) + 
+  geom_point(aes(size = n)) + 
+  geom_smooth(method = "lm")
+```
+
+```{R}
+ggplot(pose_diff, aes(x = age_mo, y = diff)) +
+  geom_point(aes(size = n)) + 
+  geom_smooth(method = "lm")
+```
+
 ```{R}
 ggplot(pose_ms, aes(x = age_mo, y = prop, col = part)) + 
   geom_point(aes(size = n)) + 
@@ -85,6 +125,23 @@ ggplot(pose_indiv %>% filter(hours_of_data>25 & part!='body'), aes(x = age_mo, y
 
 ggsave('poses_by_subject.png', width=6, height=6)
 ```
+
+
+```{R}
+ggplot(pose_indiv_diff %>% filter(hours_of_data>25), aes(x = age_mo, y = diff)) + 
+  geom_point(aes(size = n, weights=2), alpha=.2, span=5) +
+  geom_smooth() +
+  ylab('Proportion  detected') +
+  xlab('Age (in months)') +
+  facet_wrap(~subject_id_internal, nrow=4) +
+  theme(legend.position='none') +
+  theme_few() +
+  theme(legend.position='none') 
+
+
+ggsave('poses_by_subject_diff.png', width=6, height=6)
+```
+
 
 ```{R}
 
