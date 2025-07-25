@@ -13,10 +13,14 @@ library(tidytext)
 library(topicmodels)
 library(stopwords)
 library(patchwork)
+library(purrr)
+library(progress)
+
 
 source(here("analysis", "ARF.R"))
 source(here("analysis", "load_aoas.R"))
 source(here("analysis", "theme.R"))
+source(here("analysis", "context_helper.R"))
 
 knitr::opts_chunk$set(
   message = FALSE
@@ -26,10 +30,35 @@ knitr::opts_chunk$set(
 ```{r}
 all_trans_annotated <- read_csv(here("intermediates", "merged_trans_annotated.csv"))
 ```
+# Activities example
+```{r}
+activities <- read.csv(here("intermediates/activities.csv"))
+activities_cleaned <- activities |>
+  mutate(
+    superseded_gcp_name_feb25 = sub("_processed.*", "", basename(dirname(video_path))),
+    chunk_num = as.integer(sub(".*_(\\d+)\\.mp4", "\\1", basename(video_path))),
+    start_time = chunk_num * 10,
+    end_time = start_time + 10
+  )
+activities_cleaned_groups <- unique(activities_cleaned$superseded_gcp_name_feb25)
+special_cases <- c("00370002_2024-04-14_3_14a09138ad", "00320002_2024-08-31_1_4e6440f919")
 
+all_activities_avg <- map_dfr(activities_cleaned_groups, function(group) {
+  # Filter for the current group
+  group_data <- activities_cleaned_new %>%
+    filter(superseded_gcp_name_feb25 == group) %>%
+    arrange(chunk_num) %>%
+    # avg prob smooth for both, using width 3 since they are clips
+    mutate(activities_weighted = smooth_locations_uniform_normalized(activity_options, activity_probs, width=3)) %>%
+    mutate(locations_chunked = smooth_locations_uniform_normalized(location_options, location_probs, width=3))
+  return(group_data)
+})
+write.csv(all_activities_avg, here("intermediates/all_activity_location_chunks.csv"))
+```
 
 # Locations and tokens
 ```{r eval=F}
+# location csv files for each video pulled locally
 loc_files <- list.files(here("../", "bv-contexts", "locations"),
                         pattern = "\\.csv",
                         full.names = T)
@@ -47,26 +76,121 @@ all_locations_cleaned <- all_locations |>
   separate_wider_delim(image_path, delim = "/",
                        names = c("superseded_gcp_name_feb25", "frame_num"))
 
-all_locations_avg <- all_locations_cleaned |> 
-  group_by(superseded_gcp_name_feb25) |>
-  mutate(locations_avg = rollapply(location, width = 5,
-                                    FUN = \(x) {
-                                      ux <- unique(x)
-                                      ux <- ux[!is.na(ux)]
-                                      counts <- tabulate(match(x, ux))
-                                      # break ties by favouring middle
-                                      counts[which(ux == x[3])] <- counts[which(ux == x[3])] + 0.5
-                                      ux[which.max(counts)]
-                                    },
-                                    partial = TRUE))
+# Get unique group names
+group_names <- unique(all_locations_cleaned$superseded_gcp_name_feb25)
+
+# Initialize progress bar
+pb <- progress_bar$new(
+  total = length(group_names),
+  format = "Processing [:bar] :current/:total (:percent) :eta"
+)
+
+# Process each group manually
+all_locations_avg <- map_dfr(group_names, function(group) {
+  # Update progress bar
+  pb$tick()
+  
+  # Filter for the current group
+  group_data <- all_locations_cleaned %>%
+    filter(superseded_gcp_name_feb25 == group) %>%
+    mutate(
+      locations_avg_prob = smooth_locations_uniform_normalized(location_options, location_probs),
+      locations_weighted_harmonic = smooth_locations_normalized(location_options, location_probs),
+      locations_avg_modal = rollapply(location, width = 5,
+                                FUN = \(x) {
+                                  ux <- unique(x)
+                                  ux <- ux[!is.na(ux)]
+                                  if (length(ux) == 0) return(NA)
+                                  counts <- tabulate(match(x, ux))
+                                  # break ties by favouring middle
+                                  if (length(x) >= 3) {
+                                    middle_val <- x[3]
+                                    if (!is.na(middle_val) && middle_val %in% ux) {
+                                      counts[which(ux == middle_val)] <- counts[which(ux == middle_val)] + 0.5
+                                    }
+                                  }
+                                  ux[which.max(counts)]
+                                },
+                                partial = TRUE))
+  return(group_data)
+})
 
 write_csv(all_locations_avg, here("intermediates", "merged_locations.csv"))
 ```
 
+## Comparing different smoothing methods
 ```{r}
 all_locations_avg <- read_csv(here("intermediates", "merged_locations.csv"))
+
+df_loc_switches <- all_locations_avg |> 
+  group_by(superseded_gcp_name_feb25) |> 
+  summarise(
+    pc_switches_original = mean(location != lag(locations_avg_modal), na.rm = TRUE) * 100,
+    pc_switches_avg_prob = mean(locations_avg_prob != lag(locations_avg_probs), na.rm = TRUE) * 100,
+    pc_switches_weighted = mean(locations_weighted_harmonic != lag(locations_avg_harmonic), na.rm = TRUE) * 100,
+    .groups = 'drop'
+  )
+
+# Reshape data for plotting
+switches_long <- df_loc_switches |>
+  select(superseded_gcp_name_feb25, 
+         pc_switches_original, 
+         pc_switches_avg_prob, pc_switches_weighted) |>
+  pivot_longer(
+    cols = starts_with("pc_switches"),
+    names_to = "method",
+    values_to = "pc_switches",
+    names_prefix = "pc_switches_"
+  ) |>
+  mutate(
+    method = factor(method, 
+                   levels = c("original", "avg_prob", "weighted"),
+                   labels = c("Original", "Avg Probability", "Weighted Harmonic"))
+  )
 ```
 
+```{r}
+comparison_data <- df_loc_switches |>
+  select(superseded_gcp_name_feb25, pc_switches_original, 
+         pc_switches_avg_prob, pc_switches_weighted) |>
+  pivot_longer(
+    cols = c(pc_switches_avg_prob, pc_switches_weighted),
+    names_to = "method",
+    values_to = "pc_switches_smoothed",
+    names_prefix = "pc_switches_"
+  ) |>
+  mutate(
+    method = factor(method,
+                   levels = c("avg_prob", "weighted"),
+                   labels = c("Avg Probability", "Weighted Harmonic"))
+  )
+
+loc_switch_plot <- comparison_data |>
+  ggplot(aes(x = pc_switches_original, y = pc_switches_smoothed, color = method)) +
+  geom_point(alpha = 0.6) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", alpha = 0.5) +
+  labs(
+    title = "Switch Percentages: Original vs Smoothed Methods",
+    subtitle = "Points below diagonal indicate smoothing reduced switches",
+    x = "Sliding window switch %",
+    y = "Smoothed Method Switch %",
+    color = "Smoothing Method"
+  ) +
+  theme_minimal() +
+  scale_color_viridis_d()
+loc_switch_plot
+
+smoothing_stats <- switches_long |>
+  group_by(method) |>
+  summarise(
+    mean_switches = mean(pc_switches, na.rm = TRUE),
+    median_switches = median(pc_switches, na.rm = TRUE),
+    sd_switches = sd(pc_switches, na.rm = TRUE),
+    q25 = quantile(pc_switches, 0.25, na.rm = TRUE),
+    q75 = quantile(pc_switches, 0.75, na.rm = TRUE),
+    .groups = 'drop'
+  )
+```
 ```{r}
 trans_by_loc <- all_trans_annotated |> 
   mutate(frame_num = token_start_time |> as.numeric()) |> 
