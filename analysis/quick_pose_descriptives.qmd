@@ -3,6 +3,7 @@ title: "BabyView Developmental Analysis"
 format: html
 ---
 
+# Setup
 ```{r}
 # remotes::install_github("babyview-project/babyviewr")
 library(tidyverse)
@@ -15,147 +16,202 @@ library(here)
 DATA_LOC = here("data")
 ```
 
+## Load airtalbe data
 ```{r}
 # Load the data
 participants <- babyviewr::get_participant_data(include_demographics = TRUE)
-recordings <- babyviewr::get_main_recording_data(include_luna = TRUE)
+recordings <- babyviewr::get_main_recording_data(include_luna = FALSE)
 ```
 
-Load in the pose detedctions for 4M sampled frames
+## Get only bv-main
 ```{r}
-poses <- read_csv(here(DATA_LOC, "frame_data", "4M_pose_collated.csv"))
+d <- left_join(recordings, 
+                      participants |>
+                        filter(dataset %in% c("BV-main")) |>
+                        select(-dataset), by = "subject_id") |>
+  group_by(subject_id) |>
+  arrange(date_time) |>
+  mutate(age = date(date_time) - date_birth_rounded, 
+         cumulative_hrs = cumsum(duration_hrs), 
+         age_mo = floor(as.numeric(age)/30.3))
+
 ```
 
-Looks like a fair amount  (1M) off the sampled frames are from Bing or Luna -- not in including these in analysis.
+## Load in the pose detection for 4M sampled frames, now with bounding  boxes and NA frames
 ```{r}
-length(poses$superseded_gcp_name_feb25[!(poses$superseded_gcp_name_feb25 %in% recordings$superseded_gcp_name_feb25)])
+poses_with_bb <- read_csv(here(DATA_LOC, "frame_data", "4M_with_NA_bbox_limbs.csv")) %>%
+  mutate(frame_id = paste0(superseded_gcp_name_feb25, time_in_extended_iso))
+```
 
-
+Looks like a fair amount  (1.5M) off the sampled frames are from Bing or Luna -- not in including these in analysis.
+```{r}
+length(poses_with_bb$superseded_gcp_name_feb25[!(poses_with_bb$superseded_gcp_name_feb25 %in% recordings$superseded_gcp_name_feb25)]) 
 ```
 
 Merge in the data now with inner join
 ```{r}
-poses_joined <- inner_join(poses, d, by = c("superseded_gcp_name_feb25" = "superseded_gcp_name_feb25"))
+poses_joined <- inner_join(poses_with_bb, d, by = c("superseded_gcp_name_feb25" = "superseded_gcp_name_feb25")) 
+```
+
+
+## Make basic descriptives
+First try to get small hands in the "bottom" as child's hands
+```{r}
+bottom_corner = 910
+bottom_quarter = 910 - (910/4)
+top_quarter = 0 + (910/4)
+
+poses_joined <- poses_joined %>%
+  mutate(face_top_y_coordinate = 
+           str_extract_all(face_bounding_box_xyxy, "\\d+") %>% 
+           map(as.numeric) %>%
+           map_dbl(~ .x[2])) %>%
+   mutate(left_hand_top_y_coordinate =    
+      str_extract_all(left_hand_bounding_box_xyxy, "\\d+") %>% 
+      map(as.numeric) %>%
+      map_dbl(~ .x[2])) %>%
+   mutate(right_hand_top_y_coordinate =    
+      str_extract_all(right_hand_bounding_box_xyxy, "\\d+") %>% 
+      map(as.numeric) %>%
+      map_dbl(~ .x[2]))
 ```
 
 
 ```{r}
-pose_ms <- poses_joined |>
-  group_by(age_mo) |>
-  summarise(n = n(), 
-            body = mean(body_in_image), 
-            face = mean(face_in_image), 
-            hand = mean(hands_in_image)) |>
-  pivot_longer(cols = c("body", "face", "hand"), 
-               names_to = "part", values_to = "prop")
+poses_joined_with_regions <- poses_joined %>%
+  mutate(
+    left_hand_region = case_when(
+      left_hand_top_y_coordinate < top_quarter ~ "upper",
+      left_hand_top_y_coordinate >= top_quarter & left_hand_top_y_coordinate <= bottom_quarter ~ "centered",
+      left_hand_top_y_coordinate > bottom_quarter ~ "lower",
+      TRUE ~ NA_character_
+    ),
+    right_hand_region = case_when(
+      right_hand_top_y_coordinate < top_quarter ~ "upper",
+      right_hand_top_y_coordinate >= top_quarter & right_hand_top_y_coordinate <= bottom_quarter ~ "centered",
+      right_hand_top_y_coordinate > bottom_quarter ~ "lower",
+      TRUE ~ NA_character_
+    ),
+face_region = case_when(
+      is.na(face_top_y_coordinate) ~ NA_character_,
+      face_top_y_coordinate < top_quarter ~ "upper",
+      face_top_y_coordinate >= top_quarter & face_top_y_coordinate <= bottom_quarter ~ "centered",
+      face_top_y_coordinate > bottom_quarter ~ "lower"
+    )
+)
 
+
+
+```
+
+
+```{r}
+
+# First, pivot hands (left and right)
+hand_long <- poses_joined_with_regions %>%
+  select(subject_id_internal, age_mo, frame_id,
+         left_hand_in_image, right_hand_in_image,
+         left_hand_region, right_hand_region) %>%
+  pivot_longer(
+    cols = c(left_hand_in_image, right_hand_in_image,
+             left_hand_region, right_hand_region),
+    names_to = c("side", ".value"),
+    names_pattern = "(left|right)_(hand_in_image|hand_region)"
+  ) %>%
+  rename(in_image = hand_in_image, region = hand_region) %>%
+  mutate(
+    part = "hand",
+    in_image = replace_na(in_image, 0),
+    region = fct_relevel(region, "lower", "centered", "upper")
+  ) 
+
+# Then, pivot face
+face_long <- poses_joined_with_regions %>%
+  select(subject_id_internal, age_mo, frame_id,
+         in_image = face_in_image,
+         region = face_region) %>%
+  mutate(
+    side = "face",
+    part = "face",
+    in_image = replace_na(in_image, 0),
+    region = fct_relevel(region, "lower", "centered", "upper")
+  )
+
+# Combine both
+long_data <- bind_rows(hand_long, face_long)
+
+
+```
+
+```{R}
+  # Step 2: Collapse to frame-level presence in each region
+frame_summary <- long_data %>%  
+group_by(subject_id_internal, frame_id, age_mo, part, region) %>%
+  summarize(present = any(in_image > 0), .groups = "drop") 
 ```
 
 ```{r}
-pose_diff <- poses_joined |>
-  group_by(age_mo) |>
-  summarise(n = n(), 
-            body = mean(body_in_image), 
-            face = mean(face_in_image), 
-            hand = mean(hands_in_image)) |>
-  mutate(diff = face - hand)
-  
+## Expand dataframe
+all_regions <- factor(c("lower", "centered", "upper"), levels = c("lower", "centered", "upper"))
+all_parts <- c("hand", "face")
+
+# Fill in all part-region combinations per frame
+frame_summary_expanded <- frame_summary %>%
+  mutate(
+    region = fct_expand(region, levels(all_regions)),
+    part = factor(part, levels = all_parts)
+  ) %>%
+  complete(
+    nesting(subject_id_internal, frame_id, age_mo),
+    part,
+    region,
+    fill = list(present = FALSE)
+  )
+
 ```
 
 
 ```{r}
-pose_indiv <- poses_joined |>
-  group_by(subject_id_internal,age_mo) |>
-  summarise(n = n(), 
-            hours_of_data = unique(hours_of_data),
-            body = mean(body_in_image), 
-            face = mean(face_in_image), 
-            hand = mean(hands_in_image)) |>
-  pivot_longer(cols = c("body", "face", "hand"), 
-               names_to = "part", values_to = "prop")
-  
+  # Step 3: Aggregate to compute proportion present
+part_region_prop_by_age <- frame_summary_expanded %>%
+  filter(!is.na(region)) %>%
+group_by(subject_id_internal, age_mo, part, region) %>%
+summarize(prop_present = mean(present), n=length(unique(frame_id)),.groups = "drop")
+
 ```
 
+    
 ```{r}
-pose_indiv_diff <- poses_joined |>
-  group_by(subject_id_internal,age_mo) |>
-  summarise(n = n(), 
-            hours_of_data = unique(hours_of_data),
-            body = mean(body_in_image), 
-            face = mean(face_in_image), 
-            hand = mean(hands_in_image)) |>
-  mutate(diff = face - hand)
-
-```
-
-
-Group level plot
-```{R}
-ggplot(pose_ms, aes(x = age_mo, y = prop, col = part)) + 
-  geom_point(aes(size = n)) + 
-  geom_smooth(method = "lm")
-```
-
-```{R}
-ggplot(pose_diff, aes(x = age_mo, y = diff)) +
-  geom_point(aes(size = n)) + 
-  geom_smooth(method = "lm")
-```
-
-```{R}
-ggplot(pose_ms, aes(x = age_mo, y = prop, col = part)) + 
-  geom_point(aes(size = n)) + 
-  geom_smooth(method = "lm")
-```
-
-Individual subs
-```{R}
-ggplot(pose_indiv %>% filter(hours_of_data>25 & part!='body'), aes(x = age_mo, y = prop, col = part)) + 
-  geom_point(aes(size = n, weights=2), alpha=.2, span=5) +
-  geom_smooth(aes(group=part, fill=part), span=20) +
-  ylab('Proportion  detected') +
-  xlab('Age (in months)') +
-  facet_wrap(~subject_id_internal, nrow=4) +
-  theme(legend.position='none') +
-    scale_color_manual(values = c("#1266a2","#CB4B16"), name = "")  +
-  scale_fill_manual(values = c("#1266a2","#CB4B16"), name = "") +
-  theme_few() +
-  theme(legend.position='none') 
-
-
-ggsave('poses_by_subject.png', width=6, height=6)
-```
-
-
-```{R}
-ggplot(pose_indiv_diff %>% filter(hours_of_data>25), aes(x = age_mo, y = diff)) + 
-  geom_point(aes(size = n, weights=2), alpha=.2, span=5) +
-  geom_smooth() +
-  ylab('Proportion  detected') +
-  xlab('Age (in months)') +
-  facet_wrap(~subject_id_internal, nrow=4) +
-  theme(legend.position='none') +
-  theme_few() +
-  theme(legend.position='none') 
-
-
-ggsave('poses_by_subject_diff.png', width=6, height=6)
-```
-
-
-```{R}
-
-ggplot(pose_indiv %>% filter(hours_of_data>50 & part!='body'), aes(x = age_mo, y = prop, col = part)) + 
-  geom_point(aes(size = n), alpha=.2) +
-  geom_smooth(aes(group=part, fill=part), span=20) +
-  ylab('Proportion  detected') +
-  xlab('Age (in months)') +
-  facet_wrap(~subject_id_internal, nrow=2) +
-  theme(legend.position='none') +
-    scale_color_manual(values = c("#1266a2","#CB4B16"), name = "")  +
-  scale_fill_manual(values = c("#1266a2","#CB4B16"), name = "") +
-  theme_few() +
+ggplot(part_region_prop_by_age %>% mutate(region = fct_relevel(region, c("upper","centered","lower"))), aes(x=age_mo, y=prop_present, col=part)) +
+  geom_point(alpha=.2, aes(size=n)) + 
+  facet_wrap(~region, nrow=3) +
+  theme_few(base_size=20) +
+  geom_smooth(aes(fill=part)) +
+  scale_color_manual(values = c("#CB4B16","#1266a2"), name = "")  +
+  scale_fill_manual(values = c("#CB4B16","#1266a2"), name = "")  +
+  xlab('Age in months') +
+  ylab('Prortion detected') +
   theme(legend.position='none')
+  
+ggsave('region_by_detections.pdf', width=5, height=6, units='in', dpi=300)
+```
+
+
+```{r}
+high_data_subs = participants %>% filter(hours_of_data>50)
+
+ggplot(part_region_prop_by_age %>% filter(region=='centered' & subject_id_internal %in% high_data_subs$subject_id_internal), aes(x=age_mo, y=prop_present, col=part)) +
+  geom_point(alpha=.6, aes(size=n)) + 
+  facet_wrap(~subject_id_internal, nrow=3) +
+  theme_few() +
+  geom_smooth() +
+  scale_color_manual(values = c("#CB4B16","#1266a2"), name = "")  +
+  xlab('Age in months') +
+  ylab('Prortion detected')
+
 
 ```
+
+
+
 
